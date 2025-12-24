@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+
+logs/
+cache/
+*.log
+
+.env
+.vscode/
+
+# Isaac Sim generated
+.omniverse/
