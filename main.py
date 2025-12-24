@@ -5,6 +5,7 @@ from omni.isaac.core import World
 from omni.isaac.franka import Franka
 from omni.isaac.core.objects import GroundPlane
 from pxr import UsdLux
+import numpy as np
 
 world = World(stage_units_in_meters=1.0)
 
@@ -26,9 +27,15 @@ light.CreateAngleAttr(0.5)
 world.reset()
 
 # 테스트로 자세 변경
-franka.set_joint_positions([0, -0.5, 0, -2.0, 0, 2.0, 0.8])
+angle = 0.0
 
 while simulation_app.is_running():
+    angle += 0.05
+
+    joints = [0.0] * 7
+    joints[0] = angle
+
+    franka.set_joint_positions(joints)
     world.step(render=True)
 
 simulation_app.close()
