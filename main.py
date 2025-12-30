@@ -1,88 +1,132 @@
 from omni.isaac.kit import SimulationApp
 simulation_app = SimulationApp({"headless": False})
 
-# ---------------------------
+# =========================
 # Imports
-# ---------------------------
+# =========================
 from omni.isaac.core import World
 from omni.isaac.franka import Franka
 from omni.isaac.core.objects import GroundPlane
 from omni.isaac.core.prims import XFormPrim
+from omni.isaac.core.utils.types import ArticulationAction
 from pxr import UsdLux
-import math
+import numpy as np
 
-# ---------------------------
+# =========================
 # World 생성
-# ---------------------------
+# =========================
 world = World(stage_units_in_meters=1.0)
 
-# 바닥
 ground = GroundPlane("/World/Ground")
 
-# Franka 로봇
 franka = Franka(
     prim_path="/World/Franka",
     name="franka"
 )
 world.scene.add(franka)
 
-# End Effector (panda_hand)
 ee = XFormPrim("/World/Franka/panda_hand")
 
+# =========================
 # 조명
+# =========================
 stage = world.scene.stage
 light = UsdLux.DistantLight.Define(stage, "/World/Light")
 light.CreateIntensityAttr(3000)
 light.CreateAngleAttr(0.5)
 
-# ---------------------------
-# 초기화
-# ---------------------------
+# =========================
+# 초기화 (⚠️ 필수)
+# =========================
 world.reset()
+franka.initialize()
 print("Simulation start")
 
-# ---------------------------
-# Target EE 위치 (고정)
-# ---------------------------
-target_ee_pos = [0.45, -0.2, 0.6]
+# =========================
+# Joint 정보 확인
+# =========================
+num_dof = franka.num_dof
+print(f"Number of DOF: {num_dof}")
+print(f"Joint names: {franka.dof_names}")
 
-# ---------------------------
+# =========================
+# 컨트롤러 가져오기
+# =========================
+articulation_controller = franka.get_articulation_controller()
+
+# =========================
+# 간단한 joint position 타겟 (9개: 7 arm + 2 gripper)
+# =========================
+target_joint_positions = np.array([
+    0.0,      # panda_joint1
+    -0.785,   # panda_joint2
+    0.0,      # panda_joint3
+    -2.356,   # panda_joint4
+    0.0,      # panda_joint5
+    1.571,    # panda_joint6
+    0.785,    # panda_joint7
+    0.04,     # panda_finger_joint1 (gripper)
+    0.04      # panda_finger_joint2 (gripper)
+])
+
+target_joint_positions_close = np.array([
+    0.0,      # panda_joint1
+    -0.785,   # panda_joint2
+    0.0,      # panda_joint3
+    -2.356,   # panda_joint4
+    0.0,      # panda_joint5
+    1.571,    # panda_joint6
+    0.785,    # panda_joint7
+    0.0,      # panda_finger_joint1 (gripper closed)
+    0.0       # panda_finger_joint2 (gripper closed)
+])
+
+# =========================
 # Control Loop
-# ---------------------------
-t = 0.0
+# =========================
 frame = 0
+phase = "moving"  # moving -> wait -> closing
 
 while simulation_app.is_running():
-    t += 0.02
     frame += 1
 
-    # 관절 애니메이션 (움직임 확인용)
-    joints = [
-        0.3 * math.sin(t),
-        -0.5,
-        0.3 * math.sin(t),
-        -2.0,
-        0.3 * math.cos(t),
-        2.0,
-        0.8,
-        0.04,
-        0.04
-    ]
-    franka.set_joint_positions(joints)
+    # Phase 1: 타겟 포지션으로 이동 (그리퍼 열림)
+    if phase == "moving":
+        action = ArticulationAction(
+            joint_positions=target_joint_positions
+        )
+        articulation_controller.apply_action(action)
+        
+        if frame == 150:
+            print("Reached target with gripper open")
+            phase = "wait"
+            frame = 0
 
-    # EE 월드 포즈
-    ee_pos, ee_quat = ee.get_world_pose()
+    # Phase 2: 대기
+    elif phase == "wait":
+        if frame == 60:
+            print("Closing gripper...")
+            phase = "closing"
+            frame = 0
 
-    # EE ↔ Target 거리 계산
-    dx = target_ee_pos[0] - ee_pos[0]
-    dy = target_ee_pos[1] - ee_pos[1]
-    dz = target_ee_pos[2] - ee_pos[2]
-    distance = math.sqrt(dx*dx + dy*dy + dz*dz)
+    # Phase 3: 그리퍼 닫기
+    elif phase == "closing":
+        action = ArticulationAction(
+            joint_positions=target_joint_positions_close
+        )
+        articulation_controller.apply_action(action)
+        
+        if frame == 60:
+            print("Gripper closed, done!")
+            phase = "done"
 
-    # 0.5초마다 출력 (30프레임 기준)
-    if frame % 30 == 0:
+    # 상태 출력
+    if frame % 60 == 0:
+        ee_pos, ee_rot = ee.get_world_pose()
+        current_joints = franka.get_joint_positions()
+        print(f"\nFrame: {frame}, Phase: {phase}")
         print(f"EE pos: {ee_pos}")
-        print(f"Distance to target: {distance:.4f}")
+        print(f"Gripper joints: {current_joints[-2:]}")
         print("-" * 40)
 
     world.step(render=True)
