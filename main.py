@@ -28,26 +28,25 @@ world.scene.add(franka)
 
 ee = XFormPrim("/World/Franka/panda_hand")
 
-# 집을 물체 (빨간 큐브)
+# 집을 물체 (빨간 큐브) - 더 높게, 더 가까이
 cube = DynamicCuboid(
     prim_path="/World/Cube",
     name="cube",
-    position=np.array([0.5, 0.0, 0.05]),  # 로봇 앞
-    size=0.05,  # 5cm 크기
-    color=np.array([1.0, 0.0, 0.0])  # 빨간색
+    position=np.array([0.4, 0.0, 0.3]),  # 높이 올림
+    size=0.05,
+    color=np.array([1.0, 0.0, 0.0])
 )
 world.scene.add(cube)
 
-# 목표 위치 표시용 (초록 큐브 - 고정)
+# 목표 위치 표시용
 target_marker = DynamicCuboid(
     prim_path="/World/Target",
     name="target",
-    position=np.array([0.3, 0.3, 0.05]),  # 목표 위치
+    position=np.array([0.3, 0.3, 0.3]),
     size=0.03,
-    color=np.array([0.0, 1.0, 0.0])  # 초록색
+    color=np.array([0.0, 1.0, 0.0])
 )
 world.scene.add(target_marker)
-# 목표 마커를 고정 (물리 비활성화)
 target_marker.set_collision_enabled(False)
 
 # =========================
@@ -63,142 +62,125 @@ light.CreateAngleAttr(0.5)
 # =========================
 world.reset()
 franka.initialize()
+
+# 큐브 물리 속성 조정
+cube_prim = cube.prim
+from pxr import UsdPhysics, PhysxSchema
+mass_api = UsdPhysics.MassAPI.Apply(cube_prim)
+mass_api.CreateMassAttr(0.1)  # 가벼운 물체
+
 print("=== Pick and Place Simulation Started ===")
 print(f"Cube position: {cube.get_world_pose()[0]}")
 print(f"Target position: {target_marker.get_world_pose()[0]}")
 
 # =========================
-# Joint 설정
+# 보정된 Joint 포즈들
 # =========================
 articulation_controller = franka.get_articulation_controller()
 
-# 미리 정의된 포즈들
-home_position = np.array([0.0, -1.0, 0.0, -2.5, 0.0, 1.5, 0.785, 0.04, 0.04])
-
-# 큐브 위로 이동 (pick 준비)
-pre_pick_position = np.array([
-    0.0,      # joint1
-    -0.4,     # joint2
-    0.0,      # joint3
-    -2.0,     # joint4
-    0.0,      # joint5
-    1.6,      # joint6
-    0.785,    # joint7
-    0.04,     # gripper open
-    0.04
+# 1. 홈 포지션
+home_position = np.array([
+    0.0, -0.785, 0.0, -2.356, 0.0, 1.571, 0.785,  # arm
+    0.04, 0.04  # gripper open
 ])
 
-# 큐브 집기 (그리퍼만 닫힘)
-pick_position = np.array([
-    0.0,
-    -0.4,
-    0.0,
-    -2.0,
-    0.0,
-    1.6,
-    0.785,
-    0.0,      # gripper close
-    0.0
+# 2. 큐브 바로 위 (하강 준비)
+above_cube = np.array([
+    0.0, -0.3, 0.0, -1.8, 0.0, 1.5, 0.785,
+    0.04, 0.04
 ])
 
-# 들어올리기
-lift_position = np.array([
-    0.0,
-    -0.8,     # 위로 올림
-    0.0,
-    -2.2,
-    0.0,
-    1.8,
-    0.785,
-    0.0,      # gripper closed
-    0.0
+# 3. 큐브 바로 위에서 아래로 (더 내려감)
+at_cube = np.array([
+    0.0, -0.2, 0.0, -1.5, 0.0, 1.3, 0.785,
+    0.04, 0.04
 ])
 
-# 목표 위치로 이동
-place_position = np.array([
-    0.5,      # 회전해서 목표로
-    -0.6,
-    0.3,
-    -2.0,
-    0.0,
-    1.6,
-    0.785,
-    0.0,      # gripper closed
-    0.0
+# 4. 그리퍼 닫기 (같은 위치, 그리퍼만)
+grasp_cube = np.array([
+    0.0, -0.2, 0.0, -1.5, 0.0, 1.3, 0.785,
+    0.0, 0.0  # gripper closed
 ])
 
-# 놓기 (그리퍼 열기)
-release_position = np.array([
-    0.5,
-    -0.6,
-    0.3,
-    -2.0,
-    0.0,
-    1.6,
-    0.785,
-    0.04,     # gripper open
-    0.04
+# 5. 들어올리기
+lift_cube = np.array([
+    0.0, -0.5, 0.0, -2.0, 0.0, 1.5, 0.785,
+    0.0, 0.0
 ])
+
+# 6. 목표로 이동
+move_to_target = np.array([
+    0.5, -0.4, 0.2, -1.8, 0.0, 1.4, 0.785,
+    0.0, 0.0
+])
+
+# 7. 목표에서 하강
+at_target = np.array([
+    0.5, -0.2, 0.2, -1.5, 0.0, 1.3, 0.785,
+    0.0, 0.0
+])
+
+# 8. 그리퍼 열기
+release_cube = np.array([
+    0.5, -0.2, 0.2, -1.5, 0.0, 1.3, 0.785,
+    0.04, 0.04  # gripper open
+])
+
+# 9. 후퇴
+retreat = np.array([
+    0.5, -0.5, 0.2, -2.0, 0.0, 1.5, 0.785,
+    0.04, 0.04
+])
+
+# =========================
+# Phase 정의
+# =========================
+phases_list = [
+    ("home", home_position, 100, " Moving to HOME"),
+    ("above_cube", above_cube, 120, " Moving ABOVE cube"),
+    ("at_cube", at_cube, 80, "⬇️  Descending to cube"),
+    ("grasp", grasp_cube, 60, " GRASPING cube"),
+    ("lift", lift_cube, 80, "⬆️  LIFTING cube"),
+    ("move", move_to_target, 120, "➡️  Moving to TARGET"),
+    ("at_target", at_target, 80, "⬇️  Descending to target"),
+    ("release", release_cube, 60, " RELEASING cube"),
+    ("retreat", retreat, 80, "🔙 Retreating"),
+    ("done", retreat, 60, " DONE!")
+]
 
 # =========================
 # Control Loop
 # =========================
 frame = 0
-phase = "home"
-phases = {
-    "home": (home_position, 120, "pre_pick"),
-    "pre_pick": (pre_pick_position, 120, "pick"),
-    "pick": (pick_position, 60, "lift"),
-    "lift": (lift_position, 100, "place"),
-    "place": (place_position, 120, "release"),
-    "release": (release_position, 60, "done"),
-    "done": (release_position, 60, "done")
-}
+phase_idx = 0
+phase_name, target_pos, duration, message = phases_list[phase_idx]
 
-print("\n Phase: Moving to HOME position...")
+print(f"\n{message}")
 
 while simulation_app.is_running():
     frame += 1
     
-    if phase in phases:
-        target_pos, duration, next_phase = phases[phase]
-        
-        # 타겟 포지션으로 이동
-        action = ArticulationAction(joint_positions=target_pos)
-        articulation_controller.apply_action(action)
-        
-        # Phase 전환
-        if frame >= duration:
-            if next_phase != phase:
-                frame = 0
-                phase = next_phase
-                
-                # Phase별 메시지
-                if phase == "pre_pick":
-                    print("\n Phase: Moving above CUBE...")
-                elif phase == "pick":
-                    print("\n Phase: CLOSING gripper...")
-                elif phase == "lift":
-                    print("\n⬆  Phase: LIFTING cube...")
-                elif phase == "place":
-                    print("\n  Phase: Moving to TARGET...")
-                elif phase == "release":
-                    print("\n Phase: RELEASING cube...")
-                elif phase == "done":
-                    print("\n Phase: DONE!")
+    # 현재 타겟으로 이동
+    action = ArticulationAction(joint_positions=target_pos)
+    articulation_controller.apply_action(action)
     
-    # 상태 출력 (매 60 프레임)
-    if frame % 60 == 0 and phase != "done":
+    # Phase 전환
+    if frame >= duration and phase_idx < len(phases_list) - 1:
+        phase_idx += 1
+        frame = 0
+        phase_name, target_pos, duration, message = phases_list[phase_idx]
+        print(f"\n{message}")
+    
+    # 상태 출력
+    if frame % 40 == 0:
         ee_pos, _ = ee.get_world_pose()
         cube_pos, _ = cube.get_world_pose()
         gripper_state = "OPEN" if target_pos[-1] > 0.02 else "CLOSED"
         
-        print(f"\n[Frame {frame}] Phase: {phase.upper()}")
-        print(f"  EE position: [{ee_pos[0]:.3f}, {ee_pos[1]:.3f}, {ee_pos[2]:.3f}]")
-        print(f"  Cube position: [{cube_pos[0]:.3f}, {cube_pos[1]:.3f}, {cube_pos[2]:.3f}]")
-        print(f"  Gripper: {gripper_state}")
-        print("-" * 50)
-
+        print(f"[{phase_name.upper():12s}] EE:[{ee_pos[0]:.2f}, {ee_pos[1]:.2f}, {ee_pos[2]:.2f}] "
+              f"Cube:[{cube_pos[0]:.2f}, {cube_pos[1]:.2f}, {cube_pos[2]:.2f}] "
+              f"Gripper:{gripper_state}")
+    
     world.step(render=True)
 
 simulation_app.close()
