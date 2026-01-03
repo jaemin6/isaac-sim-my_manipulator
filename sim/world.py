@@ -1,38 +1,84 @@
+# sim/world.py
+
+import numpy as np
+from pxr import UsdGeom, UsdLux, Gf, UsdPhysics, PhysxSchema
+
 from omni.isaac.core import World
 from omni.isaac.core.objects import GroundPlane
 
+
 class SimulationWorld:
     def __init__(self):
-        # 1. Isaac World 초기화 (기본 단위: 미터)
+        # Isaac World 생성
         self.world = World(stage_units_in_meters=1.0)
         self.stage = self.world.scene.stage
 
-        # 2. 필수 기본 환경 구성
-        self._setup_scene()
+        # 기본 환경
+        self._add_ground()
+        self._add_light()
 
-    def _setup_scene(self):
-        # 바닥 생성
-        GroundPlane("/World/Ground")
-        # 여기에 로봇이나 추가 오브젝트 로드 로직을 추가
+        # 작업 환경
+        self._add_table()
+        self._add_cube()
+        self._add_target()
 
     # -------------------------------------------------
-    # 핵심 제어 API
+    # Public API
     # -------------------------------------------------
     def reset(self):
-        """시뮬레이션 초기화"""
         self.world.reset()
 
     def step(self, render=True):
-        """물리 타임스텝 진행"""
         self.world.step(render=render)
 
     def get_world(self):
-        """World 객체 접근"""
         return self.world
 
-if __name__ == "__main__":
-    sim_world = SimulationWorld()
-    sim_world.reset()
-    
-    while True:
-        sim_world.step()
+    # -------------------------------------------------
+    # Private: Environment
+    # -------------------------------------------------
+    def _add_ground(self):
+        GroundPlane("/World/Ground")
+
+    def _add_light(self):
+        light = UsdLux.DistantLight.Define(self.stage, "/World/Light")
+        light.CreateIntensityAttr(3000)
+        light.CreateAngleAttr(0.5)
+
+    def _add_table(self):
+        table = UsdGeom.Cube.Define(self.stage, "/World/Table")
+        table.CreateSizeAttr(1.0)
+        table.AddTranslateOp().Set(Gf.Vec3f(0.67, 0.0, 0.30))
+        table.AddScaleOp().Set(Gf.Vec3f(0.4, 0.4, 0.6))
+        table.CreateDisplayColorAttr([(0.7, 0.7, 0.7)])
+
+        UsdPhysics.CollisionAPI.Apply(table.GetPrim())
+
+    def _add_cube(self):
+        cube_pos = np.array([0.67, 0.0, 0.61])
+
+        cube = UsdGeom.Cube.Define(self.stage, "/World/Cube")
+        cube.CreateSizeAttr(1.0)
+        cube.AddTranslateOp().Set(Gf.Vec3f(*cube_pos))
+        cube.AddScaleOp().Set(Gf.Vec3f(0.05, 0.05, 0.05))
+        cube.CreateDisplayColorAttr([(1.0, 0.0, 0.0)])
+
+        cube_prim = cube.GetPrim()
+
+        # Physics
+        UsdPhysics.CollisionAPI.Apply(cube_prim)
+        UsdPhysics.RigidBodyAPI.Apply(cube_prim)
+
+        mass_api = UsdPhysics.MassAPI.Apply(cube_prim)
+        mass_api.CreateMassAttr(0.05)
+
+        physx_rb = PhysxSchema.PhysxRigidBodyAPI.Apply(cube_prim)
+        physx_rb.CreateSolverPositionIterationCountAttr(16)
+        physx_rb.CreateSolverVelocityIterationCountAttr(16)
+
+    def _add_target(self):
+        target = UsdGeom.Cube.Define(self.stage, "/World/Target")
+        target.CreateSizeAttr(1.0)
+        target.AddTranslateOp().Set(Gf.Vec3f(0.5, 0.3, 0.61))
+        target.AddScaleOp().Set(Gf.Vec3f(0.05, 0.05, 0.01))
+        target.CreateDisplayColorAttr([(0.0, 1.0, 0.0)])
