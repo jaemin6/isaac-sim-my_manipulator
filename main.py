@@ -4,6 +4,7 @@ simulation_app = SimulationApp({"headless": False})
 # 2. 그 다음 Isaac 관련 모듈 import
 from sim.world import SimulationWorld
 from sim.robot import FrankaRobot
+from sim.camera import SimulationCamera
 
 # World 생성
 sim_world = SimulationWorld()
