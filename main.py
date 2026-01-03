@@ -11,6 +11,8 @@ world = sim_world.get_world()
 robot = FrankaRobot(world)
 robot.initialize()
 
+camera = SimulationCamera()
+
 sim_world.reset()
 
 while simulation_app.is_running():
