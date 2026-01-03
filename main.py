@@ -5,15 +5,23 @@ simulation_app = SimulationApp({"headless": False})
 from sim.world import SimulationWorld
 from sim.robot import FrankaRobot
 
+# World 생성
 sim_world = SimulationWorld()
 world = sim_world.get_world()
 
+# World reset (physics 준비)
+sim_world.reset()
+
+# Physics를 최소 1 step 돌림
+sim_world.step(render=True)
+
+# 로봇 생성 & initialize
 robot = FrankaRobot(world)
 robot.initialize()
 
 camera = SimulationCamera()
 
-sim_world.reset()
+
 
 while simulation_app.is_running():
     sim_world.step(render=True)
