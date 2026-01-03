@@ -33,8 +33,6 @@ class SimulationCamera:
         stage = get_current_stage()
         cam_prim = stage.GetPrimAtPath(self.prim_path)
 
-        xform = UsdGeom.XformCommonAPI(cam_prim)
-
         pos = Gf.Vec3d(*position)
         tgt = Gf.Vec3d(*target)
 
@@ -44,21 +42,48 @@ class SimulationCamera:
         # Isaac Sim 기준: Z-up, -Z forward
         up = Gf.Vec3d(0, 0, 1)
 
-        right = direction.Cross(up)
+        right = Gf.Cross(direction, up)
         right.Normalize()
 
-        up_corrected = right.Cross(direction)
+        up_corrected = Gf.Cross(right, direction)
         up_corrected.Normalize()
 
+        # 3x3 회전 행렬 생성
         rot = Gf.Matrix3d(
-            right[0], up_corrected[0], -direction[0], 0,
-            right[1], up_corrected[1], -direction[1], 0,
-            right[2], up_corrected[2], -direction[2], 0,
-            0,        0,               0,            1,
+            right[0], up_corrected[0], -direction[0],
+            right[1], up_corrected[1], -direction[1],
+            right[2], up_corrected[2], -direction[2]
         )
 
-        xform.SetTranslate(pos)
-        xform.SetRotate(rot.ExtractRotation())
+        # Quaternion으로 변환
+        rotation = rot.ExtractRotation()
+        quat = rotation.GetQuaternion()
+
+        # 직접 속성 설정
+        xformable = UsdGeom.Xformable(cam_prim)
+        
+        # 기존 xform ops 가져오기
+        xform_ops = xformable.GetOrderedXformOps()
+        
+        # translate와 orient op 찾기 또는 생성
+        translate_op = None
+        orient_op = None
+        
+        for op in xform_ops:
+            if op.GetOpType() == UsdGeom.XformOp.TypeTranslate:
+                translate_op = op
+            elif op.GetOpType() == UsdGeom.XformOp.TypeOrient:
+                orient_op = op
+        
+        # 없으면 생성
+        if translate_op is None:
+            translate_op = xformable.AddTranslateOp()
+        if orient_op is None:
+            orient_op = xformable.AddOrientOp(precision=UsdGeom.XformOp.PrecisionDouble)
+        
+        # 값 설정
+        translate_op.Set(pos)
+        orient_op.Set(Gf.Quatd(quat.GetReal(), *quat.GetImaginary()))
 
     def get_rgb(self):
         return self.camera.get_rgba()[:, :, :3]
