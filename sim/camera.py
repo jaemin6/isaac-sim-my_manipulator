@@ -15,6 +15,7 @@ class SimulationCamera:
         resolution=(640, 480),
     ):
         self.prim_path = prim_path
+        self.resolution = resolution
 
         # Camera sensor
         self.camera = Camera(
@@ -86,4 +87,19 @@ class SimulationCamera:
         orient_op.Set(Gf.Quatd(quat.GetReal(), *quat.GetImaginary()))
 
     def get_rgb(self):
-        return self.camera.get_rgba()[:, :, :3]
+        """RGB 이미지 가져오기 (RGBA에서 RGB만 추출)"""
+        rgba = self.camera.get_rgba()
+        
+        # 데이터가 없거나 비어있으면 None 반환
+        if rgba is None or rgba.size == 0:
+            return None
+        
+        # 1D array이면 reshape
+        if rgba.ndim == 1:
+            h, w = self.resolution
+            # 크기가 맞지 않으면 None 반환
+            if rgba.size != h * w * 4:
+                return None
+            rgba = rgba.reshape(h, w, 4)
+
+        return rgba[:, :, :3]
