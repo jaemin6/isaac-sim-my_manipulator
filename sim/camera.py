@@ -1,5 +1,4 @@
 # sim/camera.py
-
 import numpy as np
 from omni.isaac.sensor import Camera
 
