@@ -5,6 +5,7 @@ simulation_app = SimulationApp({"headless": False})
 from sim.world import SimulationWorld
 from sim.robot import FrankaRobot
 from sim.camera import SimulationCamera
+from vision.perception import PerceptionSystem
 
 # World 생성
 sim_world = SimulationWorld()
@@ -22,10 +23,11 @@ robot.initialize()
 
 camera = SimulationCamera()
 
-
+perception = PerceptionSystem(camera)
 
 while simulation_app.is_running():
     sim_world.step(render=True)
+    perception.step()
 
 simulation_app.close()
 
