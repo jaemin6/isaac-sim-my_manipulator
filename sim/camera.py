@@ -243,3 +243,50 @@ class SimulationCamera:
         현재 프레임 번호 (Replicator에서는 사용 안 함)
         """
         return 0
+    
+    def pixel_to_camera(self, u, v, depth):
+        """
+        Pixel 좌표 + depth → 카메라 좌표계 (meters)
+        """
+        width, height = self.resolution
+
+        # FOV 가정 (Isaac 기본값 근처, 나중에 튜닝 가능)
+        fov = np.deg2rad(60.0)
+        fx = width / (2 * np.tan(fov / 2))
+        fy = fx
+        
+        cx = width / 2
+        cy = height / 2
+
+        X = (u - cx) * depth / fx
+        Y = -(v - cy) * depth / fy
+        Z = depth
+
+        return np.array([X, Y, Z])
+    
+    def camera_to_world(self, cam_point):
+        """
+        카메라 좌표계 → 월드 좌표계
+        """
+        cam_pos = np.array(self.position, dtype=float)
+        target = np.array(self.look_at, dtype=float)
+
+        forward = target - cam_pos
+        forward = forward / np.linalg.norm(forward)
+
+        up = np.array([0.0, 0.0, 1.0])
+        right = np.cross(forward, up)
+        right = right / np.linalg.norm(right)
+        up = np.cross(right, forward)
+
+        R = np.vstack([right, up, forward]).T
+        world_point = cam_pos + R @ cam_point
+
+        return world_point
+    
+    def pixel_depth_to_world(selfm, u, v, depth):
+        # Pixel (u, v) + depth → World 좌표
+        cam_point = self.pixel_to_camera(u, v, depth)
+        world_point = self.camera_to_world(cam_point)
+        return world_point
+
