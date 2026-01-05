@@ -1,7 +1,8 @@
 # main.py
-# 프로젝트 루트 디렉토리를 sys.path에 명시적으로 추가
 import sys
 import os
+import cv2
+import numpy as np
 
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 if PROJECT_ROOT not in sys.path:
@@ -9,74 +10,163 @@ if PROJECT_ROOT not in sys.path:
 
 from isaacsim.simulation_app import SimulationApp
 
-# 1. SimulationApp 먼저 생성
+# 무조건 제일 먼저
 simulation_app = SimulationApp({"headless": False})
 
-# 2. 그 다음 Isaac 관련 모듈 import
 from sim.world import SimulationWorld
 from sim.robot import FrankaRobot
 from sim.camera import SimulationCamera
 from vision.detector import SimpleObjectDetector
+import omni.kit.app
+
 
 def main():
-    # World 생성
+    # =====================
+    # World 먼저
+    # =====================
     sim_world = SimulationWorld()
     world = sim_world.get_world()
-
-    # World reset (physics 준비)
     sim_world.reset()
 
-    # 로봇 생성 & initialize
+    # 최소 1프레임 렌더
+    sim_world.step(render=True)
+
+    # =====================
+    # Robot
+    # =====================
     robot = FrankaRobot(world)
     robot.initialize()
 
-    # 카메라 생성
-    camera = SimulationCamera()
+    # 로봇 로딩 대기 (증가)
+    print("Loading robot...")
+    for _ in range(50):  # 30 -> 50으로 증가
+        sim_world.step(render=True)
 
-    # Detector 생성
+    # =====================
+    # Camera (로봇 로딩 후 초기화)
+    # =====================
+    print("Initializing camera...")
+    camera = SimulationCamera(
+        prim_path="/World/FrankaCamera",
+        position=(0.0, 0.0, 2.5),  # 위에서 아래를 보도록
+        look_at=(0.0, 0.0, 0.5),  # 테이블 위의 물체를 바라봄
+    )
+
+    # 카메라 초기화 후 충분한 워밍업
+    print("Camera warming up...")
+    app = omni.kit.app.get_app()
+    
+    for i in range(60):  # 20 -> 60으로 증가
+        sim_world.step(render=True)
+        app.update()  # 렌더링 동기화
+        if i % 10 == 0:
+            print(f"  Warmup {i}/60")
+
     detector = SimpleObjectDetector()
 
-    # 카메라가 준비될 때까지 몇 step 실행
-    print("Initializing camera...")
-    for _ in range(5):
-        sim_world.step(render=True)
+    # 카메라 정보 출력
+    camera.get_camera_info()
     
-    print("Starting main loop...")
+    # 첫 번째 이미지 확인
+    print("\nTesting first image capture...")
+    for attempt in range(5):
+        print(f"  Attempt {attempt + 1}/5...")
+        
+        # 렌더링 동기화
+        for _ in range(5):
+            sim_world.step(render=True)
+            app.update()
+        
+        test_rgb = camera.get_rgb()
+        
+        if test_rgb is not None:
+            print(f"    ✓ Shape: {test_rgb.shape}")
+            print(f"    ✓ Stats: min={test_rgb.min()}, max={test_rgb.max()}, mean={test_rgb.mean():.2f}")
+            
+            # 테스트 저장
+            if test_rgb.shape[2] == 4:
+                test_save = test_rgb[:, :, :3]
+            else:
+                test_save = test_rgb
+            cv2.imwrite(f"/tmp/test_capture_{attempt}.png", cv2.cvtColor(test_save, cv2.COLOR_RGB2BGR))
+            print(f"    ✓ Saved test image")
+            break
+        else:
+            print(f"    ✗ Failed")
+
+    print("\nStart main loop")
     frame_count = 0
-    
-    # 메인 루프
+
+    # =====================
+    # Main loop
+    # =====================
     while simulation_app.is_running():
+
+        # 시뮬레이션 스텝
         sim_world.step(render=True)
         
+        # 렌더링 완료 대기 (CRITICAL!)
+        app.update()
+
         # RGB 이미지 가져오기
         rgb = camera.get_rgb()
-        
-        if rgb is not None:
-            # 객체 감지
-            detections = detector.detect(rgb)
-            
-            # 감지 결과 출력 (필요시)
-            if frame_count % 30 == 0:  # 30 프레임마다 출력
-                print(f"Frame {frame_count}: Detected {len(detections) if detections else 0} objects")
-            
-            # TODO: 감지된 객체에 따라 로봇 제어
-            # if detections:
-            #     target = detections[0]  # 첫 번째 객체
-            #     robot.move_to_target(target)
+
+        # 안전 가드
+        if rgb is None:
+            if frame_count % 60 == 0:
+                print(f"Frame {frame_count}: RGB is None")
+            frame_count += 1
+            continue
+
+        if not isinstance(rgb, np.ndarray):
+            if frame_count % 60 == 0:
+                print(f"Frame {frame_count}: RGB is not ndarray")
+            frame_count += 1
+            continue
+
+        if rgb.ndim != 3:
+            if frame_count % 60 == 0:
+                print(f"Frame {frame_count}: RGB dim is {rgb.ndim}, expected 3")
+            frame_count += 1
+            continue
+
+        if rgb.shape[2] != 3 and rgb.shape[2] != 4:
+            if frame_count % 60 == 0:
+                print(f"Frame {frame_count}: RGB channels is {rgb.shape[2]}")
+            frame_count += 1
+            continue
+
+        # RGB 복사 (RGBA인 경우 RGB로 변환)
+        if rgb.shape[2] == 4:
+            vis = rgb[:, :, :3].copy()
         else:
-            if frame_count < 10:  # 처음 10 프레임만 경고
-                print(f"Frame {frame_count}: Camera data not ready")
-        
+            vis = rgb.copy()
+
+        # 이미지 저장 및 디버깅
+        if frame_count % 60 == 0:
+            save_path = f"/tmp/isaac_cam_{frame_count}.png"
+            cv2.imwrite(save_path, cv2.cvtColor(vis, cv2.COLOR_RGB2BGR))
+            print(f"[Saved] {save_path}")
+            print(f"  Shape: {vis.shape}, dtype: {vis.dtype}")
+            print(f"  Stats: min={vis.min()}, max={vis.max()}, mean={vis.mean():.2f}")
+            
+            # 중앙 픽셀 값 확인
+            h, w = vis.shape[:2]
+            center_pixel = vis[h//2, w//2]
+            print(f"  Center pixel RGB: {center_pixel}")
+
         frame_count += 1
+
 
 if __name__ == "__main__":
     try:
         main()
     except KeyboardInterrupt:
-        print("\nShutting down...")
+        print("Interrupted")
     except Exception as e:
-        print(f"Error occurred: {e}")
+        print(f"Error: {e}")
         import traceback
         traceback.print_exc()
     finally:
+        # close는 딱 한 번, 맨 마지막
         simulation_app.close()
