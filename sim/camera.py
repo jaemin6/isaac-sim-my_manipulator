@@ -61,9 +61,14 @@ class SimulationCamera:
         self.rgb_annotator = rep.AnnotatorRegistry.get_annotator("rgb")
         self.rgb_annotator.attach([self.render_product])
         
-        self._last_rgb = None
+        # Depth annotator 추가
+        self.depth_annotator = rep.AnnotatorRegistry.get_annotator("distance_to_camera")
+        self.depth_annotator.attach([self.render_product])
         
-        print("Replicator camera initialized successfully")
+        self._last_rgb = None
+        self._last_depth = None
+        
+        print("Replicator camera initialized successfully (RGB + Depth)")
     
     def initialize(self):
         """
@@ -115,6 +120,98 @@ class SimulationCamera:
         except Exception as e:
             carb.log_warn(f"Error getting RGBA: {e}")
             return None
+    
+    def get_depth(self):
+        """
+        Depth 이미지 가져오기 (카메라로부터의 거리)
+        
+        Returns:
+            numpy.ndarray: Depth 이미지 (H, W) - 단위: 미터
+            None: 실패 시
+        """
+        try:
+            # RGB와 함께 렌더링됨 (이미 orchestrator.step 호출됨)
+            depth_data = self.depth_annotator.get_data()
+            
+            if depth_data is None:
+                return self._last_depth
+            
+            # Depth는 보통 (H, W) 또는 (H, W, 1) 형태
+            if len(depth_data.shape) == 3:
+                depth = depth_data[:, :, 0].copy()
+            else:
+                depth = depth_data.copy()
+            
+            self._last_depth = depth
+            return depth
+            
+        except Exception as e:
+            carb.log_warn(f"Error getting depth: {e}")
+            return self._last_depth
+    
+    def get_rgb_depth(self):
+        """
+        RGB와 Depth를 동시에 가져오기 (효율적)
+        
+        Returns:
+            tuple: (rgb, depth) 또는 (None, None)
+        """
+        try:
+            # 한 번의 렌더링으로 둘 다 가져오기
+            rep.orchestrator.step(rt_subframes=4)
+            
+            # RGB
+            rgb_data = self.rgb_annotator.get_data()
+            if rgb_data is not None:
+                if len(rgb_data.shape) == 3 and rgb_data.shape[2] == 4:
+                    rgb = rgb_data[:, :, :3].copy()
+                else:
+                    rgb = rgb_data.copy()
+                self._last_rgb = rgb
+            else:
+                rgb = self._last_rgb
+            
+            # Depth
+            depth_data = self.depth_annotator.get_data()
+            if depth_data is not None:
+                if len(depth_data.shape) == 3:
+                    depth = depth_data[:, :, 0].copy()
+                else:
+                    depth = depth_data.copy()
+                self._last_depth = depth
+            else:
+                depth = self._last_depth
+            
+            return rgb, depth
+            
+        except Exception as e:
+            carb.log_warn(f"Error getting RGB+Depth: {e}")
+            return self._last_rgb, self._last_depth
+    
+    def visualize_depth(self, depth, min_depth=0.0, max_depth=5.0):
+        """
+        Depth를 시각화용 이미지로 변환
+        
+        Args:
+            depth: Depth 배열 (H, W)
+            min_depth: 최소 깊이 (미터)
+            max_depth: 최대 깊이 (미터)
+        
+        Returns:
+            numpy.ndarray: 컬러맵이 적용된 depth 이미지 (H, W, 3)
+        """
+        if depth is None:
+            return None
+        
+        # 깊이를 0-255로 정규화
+        depth_normalized = np.clip((depth - min_depth) / (max_depth - min_depth), 0, 1)
+        depth_uint8 = (depth_normalized * 255).astype(np.uint8)
+        
+        # Colormap 적용 (TURBO가 더 선명함)
+        import cv2
+        depth_colored = cv2.applyColorMap(depth_uint8, cv2.COLORMAP_TURBO)
+        
+        return depth_colored
     
     def get_camera_info(self):
         """

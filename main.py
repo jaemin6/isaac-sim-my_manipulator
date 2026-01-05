@@ -77,11 +77,22 @@ def main():
             sim_world.step(render=True)
             app.update()
         
-        test_rgb = camera.get_rgb()
+        # RGB + Depth 동시 가져오기
+        test_rgb, test_depth = camera.get_rgb_depth()
         
         if test_rgb is not None:
-            print(f"    ✓ Shape: {test_rgb.shape}")
-            print(f"    ✓ Stats: min={test_rgb.min()}, max={test_rgb.max()}, mean={test_rgb.mean():.2f}")
+            print(f"    ✓ RGB Shape: {test_rgb.shape}")
+            print(f"    ✓ RGB Stats: min={test_rgb.min()}, max={test_rgb.max()}, mean={test_rgb.mean():.2f}")
+            
+            if test_depth is not None:
+                print(f"    ✓ Depth Shape: {test_depth.shape}")
+                print(f"    ✓ Depth Stats: min={test_depth.min():.3f}m, max={test_depth.max():.3f}m, mean={test_depth.mean():.3f}m")
+                
+                # Depth 시각화
+                depth_vis = camera.visualize_depth(test_depth)
+                if depth_vis is not None:
+                    cv2.imwrite(f"/tmp/test_depth_{attempt}.png", depth_vis)
+                    print(f"    ✓ Saved depth visualization")
             
             # 테스트 저장
             if test_rgb.shape[2] == 4:
@@ -108,10 +119,10 @@ def main():
         # 렌더링 완료 대기 (CRITICAL!)
         app.update()
 
-        # RGB 이미지 가져오기
-        rgb = camera.get_rgb()
+        # RGB + Depth 동시 가져오기 (효율적!)
+        rgb, depth = camera.get_rgb_depth()
 
-        # 안전 가드
+        # 안전 가드 - RGB
         if rgb is None:
             if frame_count % 60 == 0:
                 print(f"Frame {frame_count}: RGB is None")
@@ -144,9 +155,10 @@ def main():
 
         # 이미지 저장 및 디버깅
         if frame_count % 60 == 0:
+            # RGB 저장
             save_path = f"/tmp/isaac_cam_{frame_count}.png"
             cv2.imwrite(save_path, cv2.cvtColor(vis, cv2.COLOR_RGB2BGR))
-            print(f"[Saved] {save_path}")
+            print(f"[Saved RGB] {save_path}")
             print(f"  Shape: {vis.shape}, dtype: {vis.dtype}")
             print(f"  Stats: min={vis.min()}, max={vis.max()}, mean={vis.mean():.2f}")
             
@@ -154,6 +166,20 @@ def main():
             h, w = vis.shape[:2]
             center_pixel = vis[h//2, w//2]
             print(f"  Center pixel RGB: {center_pixel}")
+            
+            # Depth 저장 및 분석
+            if depth is not None:
+                # Depth 시각화
+                depth_colored = camera.visualize_depth(depth, min_depth=0.5, max_depth=3.0)
+                if depth_colored is not None:
+                    depth_path = f"/tmp/isaac_depth_{frame_count}.png"
+                    cv2.imwrite(depth_path, depth_colored)
+                    print(f"[Saved Depth] {depth_path}")
+                
+                # Depth 통계
+                print(f"  Depth Stats: min={depth.min():.3f}m, max={depth.max():.3f}m, mean={depth.mean():.3f}m")
+                center_depth = depth[h//2, w//2]
+                print(f"  Center depth: {center_depth:.3f}m")
 
         frame_count += 1
 
