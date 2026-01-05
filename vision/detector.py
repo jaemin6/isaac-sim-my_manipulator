@@ -6,9 +6,9 @@ import numpy as np
 class SimpleObjectDetector:
     def __init__(
         self,
-        hsv_lower=(0, 120, 70),
+        hsv_lower=(0, 50, 50),
         hsv_upper=(10, 255, 255),
-        min_area=500,
+        min_area=100,
     ):
         self.hsv_lower = np.array(hsv_lower)
         self.hsv_upper = np.array(hsv_upper)
