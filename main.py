@@ -21,7 +21,11 @@ import omni.kit.app
 
 
 def main():
+    # =====================
+    # 상태 플래그
+    # =====================
     has_grasped = False
+
     # =====================
     # World
     # =====================
@@ -29,7 +33,9 @@ def main():
     world = sim_world.get_world()
     sim_world.reset()
 
-    sim_world.step(render=True)
+    # 초기 안정화
+    for _ in range(10):
+        sim_world.step(render=True)
 
     # =====================
     # Robot
@@ -37,50 +43,78 @@ def main():
     robot = FrankaRobot(world)
     robot.initialize()
 
-    print("Loading robot...")
-    for _ in range(50):
+    # 로봇 상태 안정화
+    for _ in range(5):
+        sim_world.step(render=True)
+
+    # EE Marker 추가
+    from omni.isaac.core.objects import VisualSphere
+
+    ee_marker = VisualSphere(
+        prim_path="/World/Debug/EE_Marker",
+        name="ee_marker",
+        radius=0.015,
+        color=np.array([1.0, 0.0, 0.0])
+    )
+    world.scene.add(ee_marker)
+
+    ee_pos, ee_ori = robot.get_ee_pose()
+    # EE marker 초기 위치 동기화
+    ee_marker.set_world_pose(position=ee_pos)
+
+    print("[Init EE Pose]")
+    print("  Position:", ee_pos)
+    print("  Orientation:", ee_ori)
+
+    print("[Init] Loading robot...")
+    for _ in range(60):
         sim_world.step(render=True)
 
     # =====================
     # Camera
     # =====================
-    print("Initializing camera...")
+    print("[Init] Initializing camera...")
     camera = SimulationCamera(
         prim_path="/World/FrankaCamera",
         position=(0.0, 0.0, 2.5),
         look_at=(0.67, 0.0, 0.61),
     )
 
-    print("Camera warming up...")
     app = omni.kit.app.get_app()
-    for i in range(60):
+
+    print("[Init] Camera warm-up...")
+    for _ in range(60):
         sim_world.step(render=True)
         app.update()
-        if i % 10 == 0:
-            print(f"  Warmup {i}/60")
 
+    camera.get_camera_info()
+
+    # =====================
+    # Detector
+    # =====================
     detector = SimpleObjectDetector(
         hsv_lower=(0, 0, 100),
         hsv_upper=(180, 95, 255),
         min_area=50,
     )
-    camera.get_camera_info()
 
-    print("\nStart main loop")
+    print("\n[Main] Start main loop")
     frame_count = 0
 
     # =====================
-    # Main loop
+    # Main Loop
     # =====================
     while simulation_app.is_running():
 
         sim_world.step(render=True)
         app.update()
 
-        rgb, depth = camera.get_rgb_depth()
+        # EE Visualization
+        ee_pos, _ = robot.get_ee_pose()
+        ee_marker.set_world_pose(position=ee_pos)
 
-        if rgb is None or not isinstance(rgb, np.ndarray):
-            frame_count += 1
+        rgb, depth = camera.get_rgb_depth()
+        if rgb is None or depth is None:
             continue
 
         # RGBA → RGB
@@ -89,91 +123,100 @@ def main():
         else:
             vis = rgb.copy()
 
-        # 디버깅: 첫 프레임에만 HSV 분석 (생략 - 필요하면 유지)
-
         # =====================
-        # Detector
+        # Object Detection
         # =====================
         result = detector.detect(vis)
 
-        if isinstance(result, tuple) and len(result) == 3:
-            center, bbox, mask = result
-
-            # 마스크 중심 계산
+        if (
+            isinstance(result, tuple)
+            and len(result) == 3
+            and not has_grasped
+        ):
+            _, _, mask = result
             ys, xs = np.where(mask > 0)
 
-            if len(xs) > 0:
-                cx = int(xs.mean())
-                cy = int(ys.mean())
+            if len(xs) == 0:
+                continue
 
-                # 시각화
-                cv2.circle(vis, (cx, cy), 5, (0, 0, 255), -1)
+            cx = int(xs.mean())
+            cy = int(ys.mean())
 
-                # =====================
-                # 좌표 변환 및 로봇 제어
-                # =====================
-                if depth is not None:
-                    z = depth[cy, cx]
-                    
-                    if z > 0.1 and not has_grasped:
-                        world_point = camera.pixel_depth_to_world(cx, cy, z)
-                        
-                        print(f"\n[Vision] Detected object at:")
-                        print(f"  Pixel: ({cx}, {cy})")
-                        print(f"  Depth: {z:.3f} m")
-                        print(f"  World: ({world_point[0]:.3f}, {world_point[1]:.3f}, {world_point[2]:.3f})")
-                        
-                        # ==========================================
-                        # 로봇 제어 시작
-                        # ==========================================
-                        
-                        # 1. Pre-grasp 위치 (물체 위 15cm)
-                        pre_grasp_pos = world_point.copy()
-                        pre_grasp_pos[2] += 0.15
-                        
-                        print(f"\n[Robot] Step 1: Moving to pre-grasp position")
-                        print(f"  Target: {pre_grasp_pos}")
-                        
-                        # TODO: robot.move_to(pre_grasp_pos) 구현 필요
-                        # 임시: 위치만 출력
-                        
-                        # 2. Grasp 위치로 하강
-                        grasp_pos = world_point.copy()
-                        grasp_pos[2] += 0.02  # 2cm 위 (큐브 크기 고려)
-                        
-                        print(f"[Robot] Step 2: Moving to grasp position")
-                        print(f"  Target: {grasp_pos}")
-                        
-                        # TODO: robot.move_to(grasp_pos)
-                        
-                        # 3. 그리퍼 닫기
-                        print(f"[Robot] Step 3: Closing gripper")
-                        # TODO: robot.close_gripper()
-                        
-                        # 4. 들어올리기
-                        lift_pos = grasp_pos.copy()
-                        lift_pos[2] += 0.20
-                        
-                        print(f"[Robot] Step 4: Lifting object")
-                        print(f"  Target: {lift_pos}")
-                        
-                        # TODO: robot.move_to(lift_pos)
-                        
-                        has_grasped = True
-                        print("\n[Success] Grasp sequence completed!\n")
+            cv2.circle(vis, (cx, cy), 5, (0, 0, 255), -1)
+
+            z = depth[cy, cx]
+            if z <= 0.1:
+                continue
+
+            # =====================
+            # Pixel → World
+            # =====================
+            world_point = camera.pixel_depth_to_world(cx, cy, z)
+
+            print("\n" + "=" * 50)
+            print("[Vision] Object detected")
+            print(f"  Pixel : ({cx}, {cy})")
+            print(f"  Depth : {z:.3f} m")
+            print(
+                f"  World : "
+                f"x={world_point[0]:.3f}, "
+                f"y={world_point[1]:.3f}, "
+                f"z={world_point[2]:.3f}"
+            )
+            print("=" * 50)
+
+            # =====================
+            # Grasp Sequence (IK)
+            # =====================
+
+            # 1. Pre-grasp
+            pre_grasp = world_point.copy()
+            pre_grasp[2] += 0.15
+
+            print("[Robot] Step 1: Pre-grasp")
+            robot.move_ee_to_position(pre_grasp)
+            for _ in range(30):
+                sim_world.step(render=True)
+                app.update()
+
+            # 2. Grasp 접근
+            grasp_pos = world_point.copy()
+            grasp_pos[2] += 0.06
+
+            print("[Robot] Step 2: Grasp approach")
+            robot.move_ee_to_position(grasp_pos)
+            for _ in range(30):
+                sim_world.step(render=True)
+                app.update()
+
+            # 3. Gripper close
+            print("[Robot] Step 3: Close gripper")
+            robot.close_gripper()
+            for _ in range(20):
+                sim_world.step(render=True)
+                app.update()
+
+            # 4. Lift
+            lift_pos = grasp_pos.copy()
+            lift_pos[2] += 0.20
+
+            print("[Robot] Step 4: Lift")
+            robot.move_ee_to_position(lift_pos)
+            for _ in range(40):
+                sim_world.step(render=True)
+                app.update()
+
+            has_grasped = True
+            print("\n[SUCCESS] Grasp sequence completed!\n")
 
         # =====================
-        # 디버그 저장
+        # Debug Save
         # =====================
         if frame_count % 60 == 0:
-            rgb_path = f"/tmp/debug_rgb_{frame_count}.png"
-            cv2.imwrite(rgb_path, cv2.cvtColor(vis, cv2.COLOR_RGB2BGR))
-
-            if depth is not None:
-                depth_vis = camera.visualize_depth(depth, 0.5, 3.0)
-                if depth_vis is not None:
-                    depth_path = f"/tmp/debug_depth_{frame_count}.png"
-                    cv2.imwrite(depth_path, depth_vis)
+            cv2.imwrite(
+                f"/tmp/debug_rgb_{frame_count}.png",
+                cv2.cvtColor(vis, cv2.COLOR_RGB2BGR),
+            )
 
         frame_count += 1
 
