@@ -284,7 +284,7 @@ class SimulationCamera:
 
         return world_point
     
-    def pixel_depth_to_world(selfm, u, v, depth):
+    def pixel_depth_to_world(self, u, v, depth):
         # Pixel (u, v) + depth → World 좌표
         cam_point = self.pixel_to_camera(u, v, depth)
         world_point = self.camera_to_world(cam_point)

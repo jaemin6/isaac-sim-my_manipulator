@@ -21,6 +21,7 @@ import omni.kit.app
 
 
 def main():
+    has_grasped = False
     # =====================
     # World
     # =====================
@@ -31,7 +32,7 @@ def main():
     sim_world.step(render=True)
 
     # =====================
-    # Robot (아직 제어 안 함)
+    # Robot
     # =====================
     robot = FrankaRobot(world)
     robot.initialize()
@@ -47,7 +48,7 @@ def main():
     camera = SimulationCamera(
         prim_path="/World/FrankaCamera",
         position=(0.0, 0.0, 2.5),
-        look_at=(0.0, 0.0, 0.5),
+        look_at=(0.67, 0.0, 0.61),
     )
 
     print("Camera warming up...")
@@ -58,7 +59,11 @@ def main():
         if i % 10 == 0:
             print(f"  Warmup {i}/60")
 
-    detector = SimpleObjectDetector()
+    detector = SimpleObjectDetector(
+        hsv_lower=(0, 0, 100),
+        hsv_upper=(180, 95, 255),
+        min_area=50,
+    )
     camera.get_camera_info()
 
     print("\nStart main loop")
@@ -84,19 +89,15 @@ def main():
         else:
             vis = rgb.copy()
 
+        # 디버깅: 첫 프레임에만 HSV 분석 (생략 - 필요하면 유지)
+
         # =====================
-        # Detector 테스트 (핵심)
+        # Detector
         # =====================
         result = detector.detect(vis)
 
         if isinstance(result, tuple) and len(result) == 3:
-            _, _, mask = result
-
-            print(f"[Detector] mask shape={mask.shape}, dtype={mask.dtype}")
-
-            # 마스크 시각화
-            mask_vis = cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR)
-            cv2.imwrite(f"/tmp/debug_mask_{frame_count}.png", mask_vis)
+            center, bbox, mask = result
 
             # 마스크 중심 계산
             ys, xs = np.where(mask > 0)
@@ -105,44 +106,61 @@ def main():
                 cx = int(xs.mean())
                 cy = int(ys.mean())
 
-                print(f"[Detector] mask center pixel: ({cx}, {cy})")
-
                 # 시각화
                 cv2.circle(vis, (cx, cy), 5, (0, 0, 255), -1)
 
-                # depth 확인
+                # =====================
+                # 좌표 변환 및 로봇 제어
+                # =====================
                 if depth is not None:
                     z = depth[cy, cx]
-                    print(f"{Detector} depth at center: {z:.3f} m")
-
-            else:
-                print("[Detector] mask is empty")
-
-        # if result is not None:
-        #     print(f"[Detector output] {result} | type={type(result)}")
-
-        #     # bbox일 가능성 (x1, y1, x2, y2)
-        #     if isinstance(result, (list, tuple)) and len(result) == 4:
-        #         x1, y1, x2, y2 = map(int, result)
-
-        #         cv2.rectangle(
-        #             vis,
-        #             (x1, y1),
-        #             (x2, y2),
-        #             (0, 255, 0),
-        #             2
-        #         )
-
-        #         cx = int((x1 + x2) / 2)
-        #         cy = int((y1 + y2) / 2)
-
-        #         cv2.circle(vis, (cx, cy), 5, (0, 0, 255), -1)
-
-        #         print(f"  bbox center pixel: ({cx}, {cy})")
-
-        #         if depth is not None:
-        #             z = depth[cy, cx]
-        #             print(f"  depth at center: {z:.3f} m")
+                    
+                    if z > 0.1 and not has_grasped:
+                        world_point = camera.pixel_depth_to_world(cx, cy, z)
+                        
+                        print(f"\n[Vision] Detected object at:")
+                        print(f"  Pixel: ({cx}, {cy})")
+                        print(f"  Depth: {z:.3f} m")
+                        print(f"  World: ({world_point[0]:.3f}, {world_point[1]:.3f}, {world_point[2]:.3f})")
+                        
+                        # ==========================================
+                        # 로봇 제어 시작
+                        # ==========================================
+                        
+                        # 1. Pre-grasp 위치 (물체 위 15cm)
+                        pre_grasp_pos = world_point.copy()
+                        pre_grasp_pos[2] += 0.15
+                        
+                        print(f"\n[Robot] Step 1: Moving to pre-grasp position")
+                        print(f"  Target: {pre_grasp_pos}")
+                        
+                        # TODO: robot.move_to(pre_grasp_pos) 구현 필요
+                        # 임시: 위치만 출력
+                        
+                        # 2. Grasp 위치로 하강
+                        grasp_pos = world_point.copy()
+                        grasp_pos[2] += 0.02  # 2cm 위 (큐브 크기 고려)
+                        
+                        print(f"[Robot] Step 2: Moving to grasp position")
+                        print(f"  Target: {grasp_pos}")
+                        
+                        # TODO: robot.move_to(grasp_pos)
+                        
+                        # 3. 그리퍼 닫기
+                        print(f"[Robot] Step 3: Closing gripper")
+                        # TODO: robot.close_gripper()
+                        
+                        # 4. 들어올리기
+                        lift_pos = grasp_pos.copy()
+                        lift_pos[2] += 0.20
+                        
+                        print(f"[Robot] Step 4: Lifting object")
+                        print(f"  Target: {lift_pos}")
+                        
+                        # TODO: robot.move_to(lift_pos)
+                        
+                        has_grasped = True
+                        print("\n[Success] Grasp sequence completed!\n")
 
         # =====================
         # 디버그 저장
@@ -150,14 +168,12 @@ def main():
         if frame_count % 60 == 0:
             rgb_path = f"/tmp/debug_rgb_{frame_count}.png"
             cv2.imwrite(rgb_path, cv2.cvtColor(vis, cv2.COLOR_RGB2BGR))
-            print(f"[Saved] {rgb_path}")
 
             if depth is not None:
                 depth_vis = camera.visualize_depth(depth, 0.5, 3.0)
                 if depth_vis is not None:
                     depth_path = f"/tmp/debug_depth_{frame_count}.png"
                     cv2.imwrite(depth_path, depth_vis)
-                    print(f"[Saved] {depth_path}")
 
         frame_count += 1
 

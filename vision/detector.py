@@ -6,9 +6,9 @@ import numpy as np
 class SimpleObjectDetector:
     def __init__(
         self,
-        hsv_lower=(0, 50, 50),
-        hsv_upper=(10, 255, 255),
-        min_area=100,
+        hsv_lower=(0, 0, 200),
+        hsv_upper=(100, 255, 255),
+        min_area=50,
     ):
         self.hsv_lower = np.array(hsv_lower)
         self.hsv_upper = np.array(hsv_upper)
@@ -32,6 +32,7 @@ class SimpleObjectDetector:
         # 노이즈 제거
         kernel = np.ones((5, 5), np.uint8)
         mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
 
         contours, _ = cv2.findContours(
             mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
@@ -40,13 +41,15 @@ class SimpleObjectDetector:
         if not contours:
             return None, None, mask
 
-        # 가장 큰 물체
+        # 가장 큰 물체 선택 (크기 제한 제거)
         largest = max(contours, key=cv2.contourArea)
         area = cv2.contourArea(largest)
-
+        
         if area < self.min_area:
             return None, None, mask
-
+        
+        print(f"[Detector] Selected object area: {area:.0f}")
+        
         x, y, w, h = cv2.boundingRect(largest)
         cx = x + w // 2
         cy = y + h // 2
