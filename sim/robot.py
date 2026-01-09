@@ -1,80 +1,57 @@
-# sim/robot.py
-import numpy as np
-from omni.isaac.franka import Franka
+from omni.isaac.core.robots import Robot
 from omni.isaac.core.utils.types import ArticulationAction
+from omni.isaac.manipulators import SingleManipulator
+from omni.isaac.manipulators.grippers import ParallelGripper
+import numpy as np
 
 
 class FrankaRobot:
-    def __init__(self, world):
+    def __init__(self, world, prim_path="/World/Franka", name="franka"):
         self.world = world
-
-        # Franka 로드 (USD 기반)
-        self.franka = Franka(
-            prim_path="/World/Franka",
-            name="franka"
+        self.prim_path = prim_path
+        self.name = name
+        self.robot = None
+        
+    def add_to_scene(self):
+        """World의 scene에 로봇 추가 (reset 전에 호출)"""
+        from omni.isaac.franka import Franka
+        
+        # Franka 로봇을 scene에 추가
+        self.robot = self.world.scene.add(
+            Franka(
+                prim_path=self.prim_path,
+                name=self.name,
+                end_effector_prim_name="panda_hand"
+            )
         )
-        self.world.scene.add(self.franka)
-
-        self.controller = None
-
-    def initialize(self):
-        """
-        Franka 초기화 + articulation controller 연결
-        """
-        self.franka.initialize()
-        self.controller = self.franka.get_articulation_controller()
-        print("[Robot] Franka initialized")
-
-    # -------------------------------------------------
-    # 상태 조회
-    # -------------------------------------------------
-    def get_joint_positions(self):
-        return self.franka.get_joint_positions()
+        print(f"[Robot] Added Franka to scene at {self.prim_path}")
+        return self.robot
 
     def get_ee_pose(self):
-        pos, ori = self.franka.end_effector.get_world_pose()
-        return np.array(pos), np.array(ori)
+        """End effector의 현재 위치와 orientation 반환"""
+        ee_pos, ee_rot = self.robot.end_effector.get_world_pose()
+        return ee_pos, ee_rot
 
-    # -------------------------------------------------
-    # 기본 동작 (IK X, 관절 제어만)
-    # -------------------------------------------------
-    def move_to_home(self):
-        """
-        Franka 기본 안전 자세
-        """
-        home_joints = np.array([
-            0.0,        # joint1
-            -0.785,     # joint2
-            0.0,        # joint3
-            -2.356,     # joint4
-            0.0,        # joint5
-            1.571,     # joint6
-            0.785       # joint7
-        ])
+    def move_to_joint_positions(self, positions):
+        """관절 위치로 직접 이동"""
+        self.robot.set_joint_positions(positions)
 
-        action = ArticulationAction(joint_positions=home_joints)
-        self.controller.apply_action(action)
+    def apply_action(self, action):
+        """ArticulationAction 적용"""
+        self.robot.apply_action(action)
 
-    def move_joint_delta(self, delta):
-        """
-        현재 관절 값에서 delta 만큼 이동
-        """
-        current = self.get_joint_positions()
-        target = current + delta
-        action = ArticulationAction(joint_positions=target)
-        self.controller.apply_action(action)
+    def get_joint_positions(self):
+        """현재 관절 위치 반환"""
+        return self.robot.get_joint_positions()
 
-    # -------------------------------------------------
-    # 그리퍼
-    # -------------------------------------------------
+    def close_gripper(self):
+        """그리퍼 닫기"""
+        self.robot.gripper.close()
+
     def open_gripper(self):
-        self.franka.gripper.apply_action(
-            ArticulationAction(joint_positions=[0.04, 0.04])
-        )
-        print("[Robot] Gripper opened")
-
-    def close_gripper(self, width=0.015):
-        self.franka.gripper.apply_action(
-            ArticulationAction(joint_positions=[width, width])
-        )
-        print("[Robot] Gripper closed")
+        """그리퍼 열기"""
+        self.robot.gripper.open()
+    
+    def get_gripper_position(self):
+        """현재 그리퍼 위치 반환"""
+        return self.robot.gripper.get_joint_positions()
