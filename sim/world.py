@@ -1,119 +1,79 @@
 # sim/world.py
-
 import numpy as np
-from pxr import UsdGeom, UsdLux, Gf, UsdPhysics, PhysxSchema, UsdShade, Sdf
-
 from omni.isaac.core import World
-from omni.isaac.core.objects import GroundPlane
+from omni.isaac.core.objects import DynamicCuboid, VisualCuboid, FixedCuboid
 
 
 class SimulationWorld:
     def __init__(self):
-        # Isaac World 생성
         self.world = World(stage_units_in_meters=1.0)
-        self.stage = self.world.scene.stage
 
-        # 기본 환경
-        self._add_ground()
-        self._add_light()
+    def setup_scene(self):
+        """장면 설정 - 받침대 위에 큐브"""
+        
+        # 조명 추가
+        self._add_lighting()
+        
+        # 바닥 (밝은 회색)
+        from omni.isaac.core.objects import GroundPlane
+        ground = GroundPlane(
+            prim_path="/World/Ground",
+            size=10.0,
+            color=np.array([0.8, 0.8, 0.8])
+        )
+        self.world.scene.add(ground)
+        
+        # 받침대 (고정된 큐브 - 테이블 역할)
+        pedestal = FixedCuboid(
+            prim_path="/World/Pedestal",
+            name="pedestal",
+            position=np.array([0.5, 0.0, 0.30]),  # 높이 30cm
+            scale=np.array([0.2, 0.2, 0.6]),      # 20cm x 20cm, 높이 60cm
+            color=np.array([0.6, 0.4, 0.2]),      # 갈색
+        )
+        self.world.scene.add(pedestal)
+        
+        # 큐브 (받침대 위에 배치)
+        # 받침대 높이(0.6m) + 받침대 절반(0.3m) + 큐브 절반(0.025m)
+        cube_height = 0.60 + 0.025
+        
+        cube = DynamicCuboid(
+            prim_path="/World/Cube",
+            name="cube",
+            position=np.array([0.5, 0.0, cube_height]),
+            scale=np.array([0.05, 0.05, 0.05]),
+            color=np.array([1.0, 1.0, 1.0]),
+            mass=0.1,
+        )
+        self.world.scene.add(cube)
+        
+        print("[World] Scene created with pedestal")
+        print(f"  Pedestal position: {pedestal.get_world_pose()[0]}")
+        print(f"  Cube initial position: {cube.get_world_pose()[0]}")
 
-        # 작업 환경
-        self._add_table()
-        self._add_cube()
-        self._add_target()
-
-    # -------------------------------------------------
-    # Public API
-    # -------------------------------------------------
-    def reset(self):
-        self.world.reset()
-
-    def step(self, render=True):
-        self.world.step(render=render)
+    def _add_lighting(self):
+        """조명 추가"""
+        from pxr import UsdLux, Gf
+        from omni.isaac.core.utils.stage import get_current_stage
+        
+        stage = get_current_stage()
+        
+        # Distant Light
+        distant_light = UsdLux.DistantLight.Define(stage, "/World/DistantLight")
+        distant_light.CreateIntensityAttr(3000)
+        distant_light.CreateColorAttr(Gf.Vec3f(1.0, 1.0, 0.95))
+        
+        # Dome Light
+        dome_light = UsdLux.DomeLight.Define(stage, "/World/DomeLight")
+        dome_light.CreateIntensityAttr(1000)
+        dome_light.CreateColorAttr(Gf.Vec3f(1.0, 1.0, 1.0))
 
     def get_world(self):
         return self.world
 
-    # -------------------------------------------------
-    # Private: Environment
-    # -------------------------------------------------
-    def _add_ground(self):
-        GroundPlane("/World/Ground")
+    def reset(self):
+        self.world.reset()
+        self.setup_scene()
 
-    def _add_light(self):
-        light = UsdLux.DistantLight.Define(self.stage, "/World/Light")
-        light.CreateIntensityAttr(3000)
-        light.CreateAngleAttr(0.5)
-
-    def _add_table(self):
-        table = UsdGeom.Cube.Define(self.stage, "/World/Table")
-        table.CreateSizeAttr(1.0)
-        table.AddTranslateOp().Set(Gf.Vec3f(0.67, 0.0, 0.30))
-        table.AddScaleOp().Set(Gf.Vec3f(0.4, 0.4, 0.6))
-        
-        # Material 적용 (회색 테이블)
-        self._apply_color_material(table.GetPrim(), (0.7, 0.7, 0.7), "/World/Looks/TableMat")
-        
-        UsdPhysics.CollisionAPI.Apply(table.GetPrim())
-
-    def _add_cube(self):
-        cube_pos = np.array([0.67, 0.0, 0.61])
-
-        cube = UsdGeom.Cube.Define(self.stage, "/World/Cube")
-        cube.CreateSizeAttr(1.0)
-        cube.AddTranslateOp().Set(Gf.Vec3f(*cube_pos))
-        cube.AddScaleOp().Set(Gf.Vec3f(0.05, 0.05, 0.05))
-        
-        cube_prim = cube.GetPrim()
-
-        # Material 적용 (빨간색 큐브) - DisplayColor 대신
-        self._apply_color_material(cube_prim, (1.0, 0.0, 0.0), "/World/Looks/RedMat")
-
-        # Physics
-        UsdPhysics.CollisionAPI.Apply(cube_prim)
-        UsdPhysics.RigidBodyAPI.Apply(cube_prim)
-
-        mass_api = UsdPhysics.MassAPI.Apply(cube_prim)
-        mass_api.CreateMassAttr(0.05)
-
-        physx_rb = PhysxSchema.PhysxRigidBodyAPI.Apply(cube_prim)
-        physx_rb.CreateSolverPositionIterationCountAttr(16)
-        physx_rb.CreateSolverVelocityIterationCountAttr(16)
-
-    def _add_target(self):
-        target = UsdGeom.Cube.Define(self.stage, "/World/Target")
-        target.CreateSizeAttr(1.0)
-        target.AddTranslateOp().Set(Gf.Vec3f(0.5, 0.3, 0.61))
-        target.AddScaleOp().Set(Gf.Vec3f(0.05, 0.05, 0.01))
-        
-        # Material 적용 (초록색 타겟)
-        self._apply_color_material(target.GetPrim(), (0.0, 1.0, 0.0), "/World/Looks/GreenMat")
-
-    # -------------------------------------------------
-    # Helper: Material 생성
-    # -------------------------------------------------
-    def _apply_color_material(self, prim, color_rgb, material_path):
-        """
-        간단한 색상 Material 생성 및 적용
-        
-        Args:
-            prim: UsdPrim 객체
-            color_rgb: (r, g, b) tuple (0.0~1.0)
-            material_path: Material 경로 (예: "/World/Looks/RedMat")
-        """
-        # Material 생성
-        material = UsdShade.Material.Define(self.stage, material_path)
-        shader = UsdShade.Shader.Define(self.stage, f"{material_path}/Shader")
-        
-        shader.CreateIdAttr("UsdPreviewSurface")
-        shader.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).Set(color_rgb)
-        shader.CreateInput("roughness", Sdf.ValueTypeNames.Float).Set(0.4)
-        shader.CreateInput("metallic", Sdf.ValueTypeNames.Float).Set(0.0)
-        
-        # Shader 출력 연결
-        material.CreateSurfaceOutput().ConnectToSource(shader.ConnectableAPI(), "surface")
-        
-        # Prim에 Material 바인딩
-        UsdShade.MaterialBindingAPI(prim).Bind(material)
-        
-        print(f"Applied material {material_path} with color {color_rgb}")
+    def step(self, render=True):
+        self.world.step(render=render)

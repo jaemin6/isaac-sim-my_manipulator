@@ -5,12 +5,12 @@ from omni.isaac.core.utils.types import ArticulationAction
 
 
 class FrankaRobot:
-    def __init__(self, world, prim_path="/World/Franka"):
+    def __init__(self, world):
         self.world = world
 
-        # Franka 생성
+        # Franka 로드 (USD 기반)
         self.franka = Franka(
-            prim_path=prim_path,
+            prim_path="/World/Franka",
             name="franka"
         )
         self.world.scene.add(self.franka)
@@ -18,42 +18,63 @@ class FrankaRobot:
         self.controller = None
 
     def initialize(self):
+        """
+        Franka 초기화 + articulation controller 연결
+        """
         self.franka.initialize()
         self.controller = self.franka.get_articulation_controller()
         print("[Robot] Franka initialized")
 
+    # -------------------------------------------------
+    # 상태 조회
+    # -------------------------------------------------
+    def get_joint_positions(self):
+        return self.franka.get_joint_positions()
+
     def get_ee_pose(self):
-        position, orientation = self.franka.end_effector.get_world_pose()
-        return position, orientation
+        pos, ori = self.franka.end_effector.get_world_pose()
+        return np.array(pos), np.array(ori)
 
-    def move_ee_to_position(self, target_position):
+    # -------------------------------------------------
+    # 기본 동작 (IK X, 관절 제어만)
+    # -------------------------------------------------
+    def move_to_home(self):
         """
-        ⚠ IK Solver 없이
-        간단한 position 기반 EE 이동 (디버깅용)
+        Franka 기본 안전 자세
         """
-        current_pos, _ = self.get_ee_pose()
-        delta = np.array(target_position) - np.array(current_pos)
+        home_joints = np.array([
+            0.0,        # joint1
+            -0.785,     # joint2
+            0.0,        # joint3
+            -2.356,     # joint4
+            0.0,        # joint5
+            1.571,     # joint6
+            0.785       # joint7
+        ])
 
-        joints = self.franka.get_joint_positions()
-
-        # 매우 단순한 매핑 (디버깅 목적)
-        joints[0] += delta[0] * 0.5
-        joints[1] += delta[1] * 0.5
-        joints[2] += delta[2] * 0.3
-
-        action = ArticulationAction(joint_positions=joints)
+        action = ArticulationAction(joint_positions=home_joints)
         self.controller.apply_action(action)
 
-    def close_gripper(self):
-        joints = self.franka.get_joint_positions()
-        joints[-2:] = [0.015, 0.015]
-        self.controller.apply_action(
-            ArticulationAction(joint_positions=joints)
-        )
+    def move_joint_delta(self, delta):
+        """
+        현재 관절 값에서 delta 만큼 이동
+        """
+        current = self.get_joint_positions()
+        target = current + delta
+        action = ArticulationAction(joint_positions=target)
+        self.controller.apply_action(action)
 
+    # -------------------------------------------------
+    # 그리퍼
+    # -------------------------------------------------
     def open_gripper(self):
-        joints = self.franka.get_joint_positions()
-        joints[-2:] = [0.04, 0.04]
-        self.controller.apply_action(
-            ArticulationAction(joint_positions=joints)
+        self.franka.gripper.apply_action(
+            ArticulationAction(joint_positions=[0.04, 0.04])
         )
+        print("[Robot] Gripper opened")
+
+    def close_gripper(self, width=0.015):
+        self.franka.gripper.apply_action(
+            ArticulationAction(joint_positions=[width, width])
+        )
+        print("[Robot] Gripper closed")

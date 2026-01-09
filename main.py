@@ -1,7 +1,11 @@
 # main.py
+"""
+카메라 없이 큐브의 실제 위치로 직접 grasp 시도
+(camera calibration 우회)
+"""
+
 import sys
 import os
-import cv2
 import numpy as np
 
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -9,226 +13,202 @@ if PROJECT_ROOT not in sys.path:
     sys.path.append(PROJECT_ROOT)
 
 from isaacsim.simulation_app import SimulationApp
-
-# 반드시 가장 먼저
 simulation_app = SimulationApp({"headless": False})
 
 from sim.world import SimulationWorld
 from sim.robot import FrankaRobot
-from sim.camera import SimulationCamera
-from vision.detector import SimpleObjectDetector
+from omni.isaac.core.objects import VisualSphere
+from omni.isaac.core.utils.stage import get_current_stage
+from pxr import UsdPhysics, Gf
 import omni.kit.app
 
 
-def main():
-    # =====================
-    # 상태 플래그
-    # =====================
-    has_grasped = False
+# -------------------------------------------------
+# Utils
+# -------------------------------------------------
+def get_cube_position():
+    from pxr import UsdGeom
+    stage = get_current_stage()
+    cube = stage.GetPrimAtPath("/World/Cube")
+    if not cube:
+        return None
 
-    # =====================
-    # World
-    # =====================
+    xform = UsdGeom.Xformable(cube)
+    pos = xform.ComputeLocalToWorldTransform(0).ExtractTranslation()
+    return np.array([pos[0], pos[1], pos[2]])
+
+
+def disable_physics(prim_path):
+    stage = get_current_stage()
+    prim = stage.GetPrimAtPath(prim_path)
+    if not prim:
+        return
+
+    if prim.HasAPI(UsdPhysics.RigidBodyAPI):
+        prim.RemoveAPI(UsdPhysics.RigidBodyAPI)
+    if prim.HasAPI(UsdPhysics.CollisionAPI):
+        prim.RemoveAPI(UsdPhysics.CollisionAPI)
+
+
+def attach_cube_to_ee():
+    stage = get_current_stage()
+    cube = stage.GetPrimAtPath("/World/Cube")
+    ee = stage.GetPrimAtPath("/World/Franka/panda_hand")
+
+    joint = UsdPhysics.FixedJoint.Define(
+        stage, "/World/FixedJoint_Grasp"
+    )
+    joint.CreateBody0Rel().SetTargets([cube.GetPath()])
+    joint.CreateBody1Rel().SetTargets([ee.GetPath()])
+
+    joint.CreateLocalPos0Attr().Set(Gf.Vec3f(0, 0, 0))
+    joint.CreateLocalPos1Attr().Set(Gf.Vec3f(0, 0, 0))
+
+    print("[Joint] Cube attached to EE")
+
+
+# -------------------------------------------------
+# Main
+# -------------------------------------------------
+def main():
     sim_world = SimulationWorld()
     world = sim_world.get_world()
     sim_world.reset()
 
-    # 초기 안정화
-    for _ in range(10):
+    for _ in range(30):
         sim_world.step(render=True)
 
-    # =====================
-    # Robot
-    # =====================
     robot = FrankaRobot(world)
     robot.initialize()
 
-    # 로봇 상태 안정화
-    for _ in range(5):
+    for _ in range(30):
         sim_world.step(render=True)
 
-    # EE Marker 추가
-    from omni.isaac.core.objects import VisualSphere
-
+    # -----------------------------
+    # Debug markers
+    # -----------------------------
     ee_marker = VisualSphere(
-        prim_path="/World/Debug/EE_Marker",
-        name="ee_marker",
-        radius=0.015,
-        color=np.array([1.0, 0.0, 0.0])
+        "/World/Debug/EE_Marker", "ee_marker",
+        radius=0.015, color=np.array([1, 0, 0])
     )
     world.scene.add(ee_marker)
+    disable_physics("/World/Debug/EE_Marker")
 
-    ee_pos, ee_ori = robot.get_ee_pose()
-    # EE marker 초기 위치 동기화
+    target_marker = VisualSphere(
+        "/World/Debug/Target_Marker", "target_marker",
+        radius=0.025, color=np.array([0, 1, 0])
+    )
+    world.scene.add(target_marker)
+    disable_physics("/World/Debug/Target_Marker")
+
+    ee_pos, _ = robot.get_ee_pose()
     ee_marker.set_world_pose(position=ee_pos)
 
-    print("[Init EE Pose]")
-    print("  Position:", ee_pos)
-    print("  Orientation:", ee_ori)
+    cube_pos = get_cube_position()
+    if cube_pos is None:
+        print("[ERROR] Cube not found")
+        return
 
-    print("[Init] Loading robot...")
-    for _ in range(60):
-        sim_world.step(render=True)
+    target_marker.set_world_pose(position=cube_pos)
 
-    # =====================
-    # Camera
-    # =====================
-    print("[Init] Initializing camera...")
-    camera = SimulationCamera(
-        prim_path="/World/FrankaCamera",
-        position=(0.0, 0.0, 2.5),
-        look_at=(0.67, 0.0, 0.61),
-    )
+    print("[Init] EE:", ee_pos)
+    print("[Cube]", cube_pos)
 
     app = omni.kit.app.get_app()
 
-    print("[Init] Camera warm-up...")
-    for _ in range(60):
+    # -----------------------------
+    # FIXED orientation (중요!!)
+    # -----------------------------
+    GRIPPER_DOWN = np.array([0.707, 0.707, 0.0, 0.0])
+
+    # -------------------------------------------------
+    # 1. Pre-grasp
+    # -------------------------------------------------
+    pre_grasp = cube_pos.copy()
+    pre_grasp[2] += 0.25
+
+    print("\n[Step 1] Pre-grasp")
+    for step in range(300):
+        robot.move_ee_to_pose(pre_grasp, GRIPPER_DOWN)
         sim_world.step(render=True)
         app.update()
 
-    camera.get_camera_info()
-
-    # =====================
-    # Detector
-    # =====================
-    detector = SimpleObjectDetector(
-        hsv_lower=(0, 0, 100),
-        hsv_upper=(180, 95, 255),
-        min_area=50,
-    )
-
-    print("\n[Main] Start main loop")
-    frame_count = 0
-
-    # =====================
-    # Main Loop
-    # =====================
-    while simulation_app.is_running():
-
-        sim_world.step(render=True)
-        app.update()
-
-        # EE Visualization
         ee_pos, _ = robot.get_ee_pose()
         ee_marker.set_world_pose(position=ee_pos)
 
-        rgb, depth = camera.get_rgb_depth()
-        if rgb is None or depth is None:
-            continue
+        dist = np.linalg.norm(ee_pos - pre_grasp)
+        if step % 20 == 0:
+            print(f"  step {step} | dist: {dist:.3f} m")
 
-        # RGBA → RGB
-        if rgb.shape[2] == 4:
-            vis = rgb[:, :, :3].copy()
-        else:
-            vis = rgb.copy()
+        if dist < 0.03:
+            print(f"  ✓ Pre-grasp reached at step {step}")
+            break
 
-        # =====================
-        # Object Detection
-        # =====================
-        result = detector.detect(vis)
+    # -------------------------------------------------
+    # 2. Grasp descend
+    # -------------------------------------------------
+    grasp_pos = cube_pos.copy()
+    grasp_pos[2] -= 0.015  # 큐브 윗면보다 살짝 아래
 
-        if (
-            isinstance(result, tuple)
-            and len(result) == 3
-            and not has_grasped
-        ):
-            _, _, mask = result
-            ys, xs = np.where(mask > 0)
+    print("\n[Step 2] Grasp descend")
+    for step in range(300):
+        robot.move_ee_to_pose(grasp_pos, GRIPPER_DOWN)
+        sim_world.step(render=True)
+        app.update()
 
-            if len(xs) == 0:
-                continue
+        ee_pos, _ = robot.get_ee_pose()
+        ee_marker.set_world_pose(position=ee_pos)
 
-            cx = int(xs.mean())
-            cy = int(ys.mean())
+        dist = np.linalg.norm(ee_pos - grasp_pos)
+        if step % 20 == 0:
+            print(f"  step {step} | dist: {dist:.3f} m")
 
-            cv2.circle(vis, (cx, cy), 5, (0, 0, 255), -1)
+        if dist < 0.02:
+            print(f"  ✓ Grasp pose reached at step {step}")
+            break
 
-            z = depth[cy, cx]
-            if z <= 0.1:
-                continue
+    # -------------------------------------------------
+    # 3. Close gripper + grasp check
+    # -------------------------------------------------
+    print("\n[Step 3] Close gripper")
+    robot.close_gripper(width=0.015)
 
-            # =====================
-            # Pixel → World
-            # =====================
-            world_point = camera.pixel_depth_to_world(cx, cy, z)
+    ee_pos, _ = robot.get_ee_pose()
 
-            print("\n" + "=" * 50)
-            print("[Vision] Object detected")
-            print(f"  Pixel : ({cx}, {cy})")
-            print(f"  Depth : {z:.3f} m")
-            print(
-                f"  World : "
-                f"x={world_point[0]:.3f}, "
-                f"y={world_point[1]:.3f}, "
-                f"z={world_point[2]:.3f}"
-            )
-            print("=" * 50)
+    FINGER_OFFSET_Z = 0.07
+    finger_pos = ee_pos.copy()
+    finger_pos[2] -= FINGER_OFFSET_Z
 
-            # =====================
-            # Grasp Sequence (IK)
-            # =====================
+    dist = np.linalg.norm(finger_pos - cube_pos)
+    print(f"[Grasp Check] Finger-Cube dist: {dist:.4f} m")
 
-            # 1. Pre-grasp
-            pre_grasp = world_point.copy()
-            pre_grasp[2] += 0.15
+    if dist < 0.03:
+        attach_cube_to_ee()
+        print("[Grasp] SUCCESS")
+    else:
+        print("[Grasp] FAILED")
 
-            print("[Robot] Step 1: Pre-grasp")
-            robot.move_ee_to_position(pre_grasp)
-            for _ in range(30):
-                sim_world.step(render=True)
-                app.update()
+    for _ in range(60):
+        sim_world.step(render=True)
 
-            # 2. Grasp 접근
-            grasp_pos = world_point.copy()
-            grasp_pos[2] += 0.06
+    # -------------------------------------------------
+    # 4. Lift
+    # -------------------------------------------------
+    lift_pos = grasp_pos.copy()
+    lift_pos[2] += 0.35
 
-            print("[Robot] Step 2: Grasp approach")
-            robot.move_ee_to_position(grasp_pos)
-            for _ in range(30):
-                sim_world.step(render=True)
-                app.update()
+    print("\n[Step 4] Lift")
+    for step in range(240):
+        robot.move_ee_to_pose(lift_pos, GRIPPER_DOWN)
+        sim_world.step(render=True)
+        app.update()
 
-            # 3. Gripper close
-            print("[Robot] Step 3: Close gripper")
-            robot.close_gripper()
-            for _ in range(20):
-                sim_world.step(render=True)
-                app.update()
+    print("\n GRASP SEQUENCE COMPLETED")
 
-            # 4. Lift
-            lift_pos = grasp_pos.copy()
-            lift_pos[2] += 0.20
-
-            print("[Robot] Step 4: Lift")
-            robot.move_ee_to_position(lift_pos)
-            for _ in range(40):
-                sim_world.step(render=True)
-                app.update()
-
-            has_grasped = True
-            print("\n[SUCCESS] Grasp sequence completed!\n")
-
-        # =====================
-        # Debug Save
-        # =====================
-        if frame_count % 60 == 0:
-            cv2.imwrite(
-                f"/tmp/debug_rgb_{frame_count}.png",
-                cv2.cvtColor(vis, cv2.COLOR_RGB2BGR),
-            )
-
-        frame_count += 1
+    while simulation_app.is_running():
+        sim_world.step(render=True)
+        app.update()
 
 
 if __name__ == "__main__":
-    try:
-        main()
-    except KeyboardInterrupt:
-        print("Interrupted")
-    except Exception as e:
-        print(f"Error: {e}")
-        import traceback
-        traceback.print_exc()
-    finally:
-        simulation_app.close()
+    main()

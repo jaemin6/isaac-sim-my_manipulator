@@ -1,292 +1,234 @@
-# sim/camera.py - Replicator 기반으로 완전 교체
-import omni.replicator.core as rep
+# sim/camera.py
 import numpy as np
-import carb
+import omni.replicator.core as rep
+from omni.isaac.core.prims import XFormPrim
 
 
 class SimulationCamera:
-    """
-    Omni Replicator를 사용한 안정적인 카메라
-    """
-    def __init__(
-        self,
-        prim_path="/World/Camera",
-        position=(0.0, 0.0, 2.0),
-        look_at=(0.0, 0.0, 0.0),
-        orientation=None,  # 하위 호환성을 위해 유지 (사용 안 함)
-        target_position=None,  # 하위 호환성
-        resolution=(640, 480),
-        frequency=30,  # 하위 호환성 (사용 안 함)
-    ):
-        """
-        Replicator 기반 카메라
-        
-        Args:
-            prim_path: 카메라 경로 (참고용)
-            position: 카메라 위치 (x, y, z)
-            look_at: 바라볼 타겟 위치 (x, y, z)
-            orientation: 사용 안 함 (하위 호환성)
-            target_position: look_at의 별칭
-            resolution: (width, height)
-            frequency: 사용 안 함 (하위 호환성)
-        """
+    """Isaac Sim 카메라 (Omni Replicator 사용)"""
+    
+    def __init__(self, prim_path, position, look_at=None, resolution=(640, 480)):
         self.prim_path = prim_path
-        self.resolution = resolution
         self.position = position
-        
-        # target_position이 주어진 경우 look_at으로 사용
-        if target_position is not None:
-            look_at = target_position
-        
         self.look_at = look_at
+        self.resolution = resolution
         
-        print(f"Creating Replicator camera at {prim_path}")
-        print(f"  Position: {position}")
-        print(f"  Look at: {look_at}")
-        print(f"  Resolution: {resolution}")
+        self.camera = None
+        self.render_product = None
+        
+        self._initialize_camera()
+
+    def _initialize_camera(self):
+        """카메라 초기화"""
+        print(f"Creating Replicator camera at {self.prim_path}")
+        print(f"  Position: {self.position}")
+        if self.look_at:
+            print(f"  Look at: {self.look_at}")
+        print(f"  Resolution: {self.resolution}")
         
         # Replicator 카메라 생성
         self.camera = rep.create.camera(
-            position=position,
-            look_at=look_at,
+            position=self.position,
+            look_at=self.look_at if self.look_at else (0, 0, 0),
         )
         
-        # 렌더 프로덕트 생성
+        # Render product 생성
         self.render_product = rep.create.render_product(
             self.camera,
-            resolution=resolution,
+            self.resolution
         )
         
-        # RGB annotator 생성
+        # RGB annotator
         self.rgb_annotator = rep.AnnotatorRegistry.get_annotator("rgb")
         self.rgb_annotator.attach([self.render_product])
         
-        # Depth annotator 추가
-        self.depth_annotator = rep.AnnotatorRegistry.get_annotator("distance_to_camera")
+        # Depth annotator
+        self.depth_annotator = rep.AnnotatorRegistry.get_annotator(
+            "distance_to_camera"
+        )
         self.depth_annotator.attach([self.render_product])
         
-        self._last_rgb = None
-        self._last_depth = None
-        
         print("Replicator camera initialized successfully (RGB + Depth)")
-    
-    def initialize(self):
-        """
-        하위 호환성을 위한 메서드 (이미 __init__에서 초기화됨)
-        """
-        pass
-    
-    def get_rgb(self):
-        """
-        RGB 이미지 가져오기
-        
-        Returns:
-            numpy.ndarray: RGB 이미지 (H, W, 3) 또는 None
-        """
-        try:
-            # Replicator 렌더링 트리거
-            rep.orchestrator.step(rt_subframes=4)
-            
-            # 데이터 가져오기
-            rgb_data = self.rgb_annotator.get_data()
-            
-            if rgb_data is None:
-                return self._last_rgb
-            
-            # RGBA -> RGB 변환
-            if len(rgb_data.shape) == 3 and rgb_data.shape[2] == 4:
-                rgb = rgb_data[:, :, :3].copy()
-            else:
-                rgb = rgb_data.copy()
-            
-            self._last_rgb = rgb
-            return rgb
-            
-        except Exception as e:
-            carb.log_warn(f"Error getting RGB: {e}")
-            return self._last_rgb
-    
-    def get_rgba(self):
-        """
-        RGBA 이미지 가져오기
-        
-        Returns:
-            numpy.ndarray: RGBA 이미지 (H, W, 4) 또는 None
-        """
-        try:
-            rep.orchestrator.step(rt_subframes=4)
-            rgba_data = self.rgb_annotator.get_data()
-            return rgba_data
-        except Exception as e:
-            carb.log_warn(f"Error getting RGBA: {e}")
-            return None
-    
-    def get_depth(self):
-        """
-        Depth 이미지 가져오기 (카메라로부터의 거리)
-        
-        Returns:
-            numpy.ndarray: Depth 이미지 (H, W) - 단위: 미터
-            None: 실패 시
-        """
-        try:
-            # RGB와 함께 렌더링됨 (이미 orchestrator.step 호출됨)
-            depth_data = self.depth_annotator.get_data()
-            
-            if depth_data is None:
-                return self._last_depth
-            
-            # Depth는 보통 (H, W) 또는 (H, W, 1) 형태
-            if len(depth_data.shape) == 3:
-                depth = depth_data[:, :, 0].copy()
-            else:
-                depth = depth_data.copy()
-            
-            self._last_depth = depth
-            return depth
-            
-        except Exception as e:
-            carb.log_warn(f"Error getting depth: {e}")
-            return self._last_depth
-    
+
     def get_rgb_depth(self):
-        """
-        RGB와 Depth를 동시에 가져오기 (효율적)
-        
-        Returns:
-            tuple: (rgb, depth) 또는 (None, None)
-        """
+        """RGB와 Depth 이미지 획득"""
         try:
-            # 한 번의 렌더링으로 둘 다 가져오기
-            rep.orchestrator.step(rt_subframes=4)
-            
             # RGB
             rgb_data = self.rgb_annotator.get_data()
-            if rgb_data is not None:
-                if len(rgb_data.shape) == 3 and rgb_data.shape[2] == 4:
-                    rgb = rgb_data[:, :, :3].copy()
-                else:
-                    rgb = rgb_data.copy()
-                self._last_rgb = rgb
-            else:
-                rgb = self._last_rgb
+            if rgb_data is None:
+                return None, None
+            rgb = np.array(rgb_data)
             
             # Depth
             depth_data = self.depth_annotator.get_data()
-            if depth_data is not None:
-                if len(depth_data.shape) == 3:
-                    depth = depth_data[:, :, 0].copy()
-                else:
-                    depth = depth_data.copy()
-                self._last_depth = depth
-            else:
-                depth = self._last_depth
+            if depth_data is None:
+                return rgb, None
+            depth = np.array(depth_data)
             
             return rgb, depth
             
         except Exception as e:
-            carb.log_warn(f"Error getting RGB+Depth: {e}")
-            return self._last_rgb, self._last_depth
-    
-    def visualize_depth(self, depth, min_depth=0.0, max_depth=5.0):
-        """
-        Depth를 시각화용 이미지로 변환
-        
-        Args:
-            depth: Depth 배열 (H, W)
-            min_depth: 최소 깊이 (미터)
-            max_depth: 최대 깊이 (미터)
-        
-        Returns:
-            numpy.ndarray: 컬러맵이 적용된 depth 이미지 (H, W, 3)
-        """
-        if depth is None:
-            return None
-        
-        # 깊이를 0-255로 정규화
-        depth_normalized = np.clip((depth - min_depth) / (max_depth - min_depth), 0, 1)
-        depth_uint8 = (depth_normalized * 255).astype(np.uint8)
-        
-        # Colormap 적용 (TURBO가 더 선명함)
-        import cv2
-        depth_colored = cv2.applyColorMap(depth_uint8, cv2.COLORMAP_TURBO)
-        
-        return depth_colored
-    
+            print(f"[Camera] Error getting data: {e}")
+            return None, None
+
     def get_camera_info(self):
-        """
-        카메라 정보 출력 (디버깅용)
-        """
+        """카메라 정보 출력"""
         print("\n=== Camera Info ===")
         print(f"Prim path: {self.prim_path}")
         print(f"Position: {self.position}")
-        print(f"Look at: {self.look_at}")
+        if self.look_at:
+            print(f"Look at: {self.look_at}")
         print(f"Resolution: {self.resolution}")
         print(f"Backend: Omni Replicator")
         print("===================\n")
-    
-    def get_world_pose(self):
-        """
-        하위 호환성을 위한 메서드
-        Returns: (position, orientation)
-        """
-        return (self.position, (1.0, 0.0, 0.0, 0.0))
-    
-    def get_resolution(self):
-        """
-        해상도 반환
-        """
-        return self.resolution
-    
-    def get_current_frame(self):
-        """
-        현재 프레임 번호 (Replicator에서는 사용 안 함)
-        """
-        return 0
-    
-    def pixel_to_camera(self, u, v, depth):
-        """
-        Pixel 좌표 + depth → 카메라 좌표계 (meters)
-        """
-        width, height = self.resolution
 
-        # FOV 가정 (Isaac 기본값 근처, 나중에 튜닝 가능)
-        fov = np.deg2rad(60.0)
-        fx = width / (2 * np.tan(fov / 2))
-        fy = fx
-        
-        cx = width / 2
-        cy = height / 2
-
-        X = (u - cx) * depth / fx
-        Y = -(v - cy) * depth / fy
-        Z = depth
-
-        return np.array([X, Y, Z])
-    
-    def camera_to_world(self, cam_point):
-        """
-        카메라 좌표계 → 월드 좌표계
-        """
-        cam_pos = np.array(self.position, dtype=float)
-        target = np.array(self.look_at, dtype=float)
-
-        forward = target - cam_pos
-        forward = forward / np.linalg.norm(forward)
-
-        up = np.array([0.0, 0.0, 1.0])
-        right = np.cross(forward, up)
-        right = right / np.linalg.norm(right)
-        up = np.cross(right, forward)
-
-        R = np.vstack([right, up, forward]).T
-        world_point = cam_pos + R @ cam_point
-
-        return world_point
-    
     def pixel_depth_to_world(self, u, v, depth):
-        # Pixel (u, v) + depth → World 좌표
-        cam_point = self.pixel_to_camera(u, v, depth)
-        world_point = self.camera_to_world(cam_point)
-        return world_point
+        """
+        픽셀 좌표와 depth를 world 좌표로 변환
+        카메라가 위에서 아래를 내려다보는 경우를 올바르게 처리
+        """
+        # 카메라 intrinsics
+        fx = self.resolution[0] / 2.0
+        fy = self.resolution[1] / 2.0
+        cx = self.resolution[0] / 2.0
+        cy = self.resolution[1] / 2.0
+        
+        # 카메라 좌표계에서의 3D 점
+        # OpenCV/Isaac Sim 좌표계: X right, Y down, Z forward
+        x_cam = (u - cx) * depth / fx
+        y_cam = (v - cy) * depth / fy
+        z_cam = depth
+        
+        point_cam = np.array([x_cam, y_cam, z_cam])
+        
+        # 카메라 위치
+        cam_pos = np.array(self.position)
+        
+        if self.look_at:
+            look_at_pos = np.array(self.look_at)
+            
+            # 카메라 방향 벡터 (Z축 - forward)
+            forward = look_at_pos - cam_pos
+            forward = forward / np.linalg.norm(forward)
+            
+            # 월드 좌표계의 up vector
+            world_up = np.array([0, 0, 1])
+            
+            # Right vector (X축)
+            right = np.cross(world_up, forward)
+            if np.linalg.norm(right) < 1e-6:
+                # forward와 world_up이 평행한 경우
+                right = np.array([1, 0, 0])
+            else:
+                right = right / np.linalg.norm(right)
+            
+            # Up vector (Y축) - 카메라 좌표계
+            up = np.cross(forward, right)
+            up = up / np.linalg.norm(up)
+            
+            # 회전 행렬 구성: [right, up, forward]
+            # 각 열이 카메라 좌표계의 축을 월드 좌표계로 변환
+            R = np.column_stack([right, up, forward])
+            
+            # 카메라 좌표계 → 월드 좌표계
+            point_world = cam_pos + R @ point_cam
+        else:
+            # look_at이 없으면 단순 변환
+            point_world = cam_pos + point_cam
+        
+        return point_world
 
+
+class RobotMountedCamera:
+    """로봇 End-Effector에 부착된 카메라"""
+    
+    def __init__(self, robot, offset=(0.0, 0.0, 0.05), resolution=(640, 480)):
+        """
+        Args:
+            robot: FrankaRobot 인스턴스
+            offset: EE 기준 카메라 오프셋 [x, y, z]
+            resolution: 카메라 해상도
+        """
+        self.robot = robot
+        self.offset = np.array(offset)
+        self.resolution = resolution
+        
+        # 카메라를 EE에 부착
+        self.prim_path = "/World/Franka/panda_hand/Camera"
+        self.camera = None
+        self.render_product = None
+        
+        self._initialize_camera()
+
+    def _initialize_camera(self):
+        """EE에 카메라 생성"""
+        print(f"Creating camera on robot end-effector")
+        print(f"  Offset from EE: {self.offset}")
+        print(f"  Resolution: {self.resolution}")
+        
+        # EE에 부착된 카메라 생성
+        self.camera = rep.create.camera(
+            position=self.offset.tolist(),
+            parent=self.robot.franka.end_effector.prim_path
+        )
+        
+        # Render product
+        self.render_product = rep.create.render_product(
+            self.camera,
+            self.resolution
+        )
+        
+        # Annotators
+        self.rgb_annotator = rep.AnnotatorRegistry.get_annotator("rgb")
+        self.rgb_annotator.attach([self.render_product])
+        
+        self.depth_annotator = rep.AnnotatorRegistry.get_annotator(
+            "distance_to_camera"
+        )
+        self.depth_annotator.attach([self.render_product])
+        
+        print("Robot-mounted camera initialized successfully")
+
+    def get_rgb_depth(self):
+        """RGB와 Depth 이미지 획득"""
+        try:
+            rgb_data = self.rgb_annotator.get_data()
+            if rgb_data is None:
+                return None, None
+            rgb = np.array(rgb_data)
+            
+            depth_data = self.depth_annotator.get_data()
+            if depth_data is None:
+                return rgb, None
+            depth = np.array(depth_data)
+            
+            return rgb, depth
+            
+        except Exception as e:
+            print(f"[RobotCamera] Error: {e}")
+            return None, None
+
+    def get_camera_pose(self):
+        """현재 카메라의 world pose"""
+        ee_pos, ee_ori = self.robot.get_ee_pose()
+        # 간단하게 EE 위치 + 오프셋
+        cam_pos = ee_pos + self.offset
+        return cam_pos, ee_ori
+
+    def pixel_depth_to_world(self, u, v, depth):
+        """픽셀을 world 좌표로 변환"""
+        fx = self.resolution[0] / 2.0
+        fy = self.resolution[1] / 2.0
+        cx = self.resolution[0] / 2.0
+        cy = self.resolution[1] / 2.0
+        
+        # 카메라 좌표계
+        x_cam = (u - cx) * depth / fx
+        y_cam = (v - cy) * depth / fy
+        z_cam = depth
+        
+        # World 좌표로 변환 (간단한 버전)
+        cam_pos, cam_ori = self.get_camera_pose()
+        point_world = cam_pos + np.array([x_cam, y_cam, z_cam])
+        
+        return point_world
