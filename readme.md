@@ -68,3 +68,15 @@ simulation_1/
 - 실제 로봇 또는 모바일 로봇과 결합 시 재사용 가능 구조
 
 
+## Simulation 1-8 Result
+
+- Pre-grasp XY error: ~0.002 m
+- Z error at grasp: ~0.127 m
+- FixedJoint grasp success
+- Lift successful
+
+Console log:
+```text
+[Init] EE: ...
+...
+✓ GRASP SEQUENCE COMPLETED
