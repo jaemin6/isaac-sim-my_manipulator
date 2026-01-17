@@ -391,7 +391,7 @@ class KeyboardController:
             print("[Action] Gripper CLOSED")
     
     def execute_auto_grasp(self, cube_index=None):
-        """자동으로 큐브 감지 및 grasp"""
+        """개선된 자동 grasp - 더 정확한 위치 제어"""
         
         # 가장 가까운 큐브 찾기
         if cube_index is None:
@@ -418,21 +418,28 @@ class KeyboardController:
         angle = np.arctan2(cube_pos[1], cube_pos[0])
         print(f"[Auto] Rotating to angle: {np.degrees(angle):.1f} deg")
         
-        # 3. Pre-grasp pose
+        # 3. 그리퍼 먼저 열기
+        print("[Auto] Opening gripper first...")
+        for _ in range(30):
+            self.franka.gripper.open()
+            self.world.step(render=True)
+        self.gripper_closed = False
+        
+        # 4. Pre-grasp pose - 큐브 위에서 대기
         pre_grasp = np.array([
-            angle,  # base rotation
-            -0.6,   # shoulder
+            angle,      # base rotation
+            -0.5,       # shoulder (조금 높게)
             0.0,
-            -2.2,   # elbow
+            -2.0,       # elbow (조금 덜 구부림)
             0.0,
-            1.6,    # wrist
+            1.8,        # wrist (높게)
             0.8,
-            0.04,   # gripper
+            0.04,       # gripper open
             0.04
         ])
         
-        print("[Auto] Moving to pre-grasp...")
-        for _ in range(150):
+        print("[Auto] Moving to pre-grasp position (above cube)...")
+        for _ in range(200):  # 더 천천히 이동
             try:
                 self.controller.apply_action(
                     ArticulationAction(joint_positions=pre_grasp)
@@ -441,12 +448,27 @@ class KeyboardController:
                 pass
             self.world.step(render=True)
         
-        # 4. Lower
-        grasp_pose = pre_grasp.copy()
-        grasp_pose[3] -= 0.4
+        # 5. 천천히 하강 - 여러 단계로 나눠서
+        print("[Auto] Lowering slowly to cube...")
         
-        print("[Auto] Lowering...")
-        for _ in range(100):
+        # 1단계: 중간 높이
+        mid_pose = pre_grasp.copy()
+        mid_pose[3] -= 0.2  # elbow를 조금만
+        
+        for _ in range(80):
+            try:
+                self.controller.apply_action(
+                    ArticulationAction(joint_positions=mid_pose)
+                )
+            except:
+                pass
+            self.world.step(render=True)
+        
+        # 2단계: 최종 grasp 높이
+        grasp_pose = mid_pose.copy()
+        grasp_pose[3] -= 0.3  # 조금 더 하강
+        
+        for _ in range(80):
             try:
                 self.controller.apply_action(
                     ArticulationAction(joint_positions=grasp_pose)
@@ -455,39 +477,68 @@ class KeyboardController:
                 pass
             self.world.step(render=True)
         
-        # 5. Close gripper
-        print("[Auto] Grasping...")
-        for _ in range(50):
+        # 6. 안정화 대기
+        print("[Auto] Stabilizing...")
+        for _ in range(30):
+            self.world.step(render=True)
+        
+        # 7. 천천히 그리퍼 닫기
+        print("[Auto] Closing gripper slowly...")
+        for _ in range(80):  # 더 천천히
             self.franka.gripper.close()
             self.world.step(render=True)
         
         self.gripper_closed = True
         
-        # 6. Attach cube
+        # 8. 한번 더 안정화
+        for _ in range(30):
+            self.world.step(render=True)
+        
+        # 9. Attach cube
+        print("[Auto] Attaching cube to end effector...")
         attach_cube_to_ee(cube_index)
         self.cube_attached = True
         
-        # 7. Lift
-        lift_pose = grasp_pose.copy()
-        lift_pose[1] += 0.4
-        lift_pose[3] += 0.6
+        # 10. 안정화 후 천천히 들어올리기
+        for _ in range(30):
+            self.world.step(render=True)
         
-        print("[Auto] Lifting...")
-        for _ in range(150):
+        # 11. Lift - 여러 단계로
+        print("[Auto] Lifting in stages...")
+        
+        # 1단계: 조금 위로
+        lift1 = grasp_pose.copy()
+        lift1[3] += 0.3
+        
+        for _ in range(100):
             try:
                 self.controller.apply_action(
-                    ArticulationAction(joint_positions=lift_pose)
+                    ArticulationAction(joint_positions=lift1)
                 )
             except:
                 pass
             self.world.step(render=True)
         
-        self.target_joints = lift_pose
+        # 2단계: 더 위로
+        lift2 = lift1.copy()
+        lift2[1] += 0.3
+        lift2[3] += 0.3
+        
+        for _ in range(100):
+            try:
+                self.controller.apply_action(
+                    ArticulationAction(joint_positions=lift2)
+                )
+            except:
+                pass
+            self.world.step(render=True)
+        
+        self.target_joints = lift2
         print("[Auto] Success: Auto-Grasp Complete")
         return True
     
     def execute_place(self):
-        """목표 위치로 이동 후 큐브 놓기"""
+        """개선된 place - 더 안정적"""
         if not self.cube_attached or self.current_cube_index is None:
             print("[Error] No cube attached! Grasp first (SPACE)")
             return False
@@ -498,21 +549,21 @@ class KeyboardController:
         angle = np.arctan2(self.target_position[1], self.target_position[0])
         print(f"[Auto] Rotating to angle: {np.degrees(angle):.1f} deg")
         
-        # 2. 목표 위 hover 위치
+        # 2. 목표 위 높은 hover 위치
         hover_pose = np.array([
             angle,
-            -0.6,
+            -0.5,       # 높게
             0.0,
-            -2.2,
+            -2.0,       # 덜 구부림
             0.0,
-            1.6,
+            1.8,        # 높게
             0.8,
             0.01,
             0.01
         ])
         
-        print("[Auto] Moving to hover position...")
-        for _ in range(150):
+        print("[Auto] Moving to hover position (high)...")
+        for _ in range(200):  # 천천히
             try:
                 self.controller.apply_action(
                     ArticulationAction(joint_positions=hover_pose)
@@ -521,12 +572,27 @@ class KeyboardController:
                 pass
             self.world.step(render=True)
         
-        # 3. 하강
-        place_pose = hover_pose.copy()
-        place_pose[3] -= 0.3  # elbow down
+        # 3. 천천히 하강 - 여러 단계
+        print("[Auto] Lowering slowly to place position...")
         
-        print("[Auto] Lowering to place position...")
-        for _ in range(100):
+        # 1단계
+        mid_pose = hover_pose.copy()
+        mid_pose[3] -= 0.2
+        
+        for _ in range(80):
+            try:
+                self.controller.apply_action(
+                    ArticulationAction(joint_positions=mid_pose)
+                )
+            except:
+                pass
+            self.world.step(render=True)
+        
+        # 2단계 - 최종 place 높이 (테이블보다 살짝 위)
+        place_pose = mid_pose.copy()
+        place_pose[3] -= 0.2  # 적당히만
+        
+        for _ in range(80):
             try:
                 self.controller.apply_action(
                     ArticulationAction(joint_positions=place_pose)
@@ -535,7 +601,12 @@ class KeyboardController:
                 pass
             self.world.step(render=True)
         
-        # 4. Detach cube
+        # 4. 안정화
+        print("[Auto] Stabilizing before release...")
+        for _ in range(50):
+            self.world.step(render=True)
+        
+        # 5. Detach cube first (그리퍼 열기 전에)
         from omni.isaac.core.utils.stage import get_current_stage
         stage = get_current_stage()
         joint_path = f"/World/GraspJoint_{self.current_cube_index}"
@@ -547,21 +618,29 @@ class KeyboardController:
         self.cube_attached = False
         self.current_cube_index = None
         
-        # 5. Open gripper
-        print("[Auto] Opening gripper...")
+        # 6. 안정화 후 그리퍼 열기
         for _ in range(30):
+            self.world.step(render=True)
+        
+        print("[Auto] Opening gripper slowly...")
+        for _ in range(60):
             self.franka.gripper.open()
             self.world.step(render=True)
         
         self.gripper_closed = False
         
-        # 6. Lift up
-        retreat_pose = place_pose.copy()
-        retreat_pose[1] += 0.3
-        retreat_pose[3] += 0.5
+        # 7. 큐브가 안정화될 때까지 대기
+        print("[Auto] Waiting for cube to settle...")
+        for _ in range(60):
+            self.world.step(render=True)
         
-        print("[Auto] Retreating...")
-        for _ in range(100):
+        # 8. 천천히 후퇴
+        print("[Auto] Retreating slowly...")
+        retreat_pose = place_pose.copy()
+        retreat_pose[1] += 0.2
+        retreat_pose[3] += 0.4
+        
+        for _ in range(120):
             try:
                 self.controller.apply_action(
                     ArticulationAction(joint_positions=retreat_pose)
