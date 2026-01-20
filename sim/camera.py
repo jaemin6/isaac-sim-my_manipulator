@@ -2,6 +2,7 @@
 import numpy as np
 import omni.replicator.core as rep
 from omni.isaac.core.prims import XFormPrim
+from omni.isaac.sensor import Camera
 
 
 class SimulationCamera:
@@ -232,3 +233,38 @@ class RobotMountedCamera:
         point_world = cam_pos + np.array([x_cam, y_cam, z_cam])
         
         return point_world
+
+
+# ============================================================
+# 메인 파일용 간단한 setup 함수
+# ============================================================
+
+def setup_camera(world):
+    """
+    탑다운 뷰 카메라 설치 (메인 파일용)
+    
+    Args:
+        world: World 객체
+    
+    Returns:
+        Camera 객체
+    """
+    print("[Camera] Setting up top-down camera...")
+    
+    camera = Camera(
+        prim_path="/World/Camera",
+        position=np.array([0.5, 0.0, 1.2]),
+        frequency=20,
+        resolution=(512, 512),
+        name="top_camera"
+    )
+    world.scene.add(camera)
+    
+    # 카메라를 아래로 향하게 (top-down view)
+    camera.set_local_pose(
+        translation=np.array([0.5, 0.0, 1.2]),
+        orientation=np.array([0.7071, 0, 0, -0.7071])  # 90도 회전
+    )
+    
+    print("[Camera] Top-down camera setup complete!")
+    return camera

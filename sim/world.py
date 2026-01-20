@@ -1,7 +1,10 @@
 # sim/world.py
 import numpy as np
 from omni.isaac.core import World
-from omni.isaac.core.objects import DynamicCuboid, VisualCuboid, FixedCuboid
+from omni.isaac.core.objects import DynamicCuboid, VisualCuboid, FixedCuboid, GroundPlane
+from omni.isaac.franka import Franka
+from pxr import UsdLux, Gf
+from omni.isaac.core.utils.stage import get_current_stage
 
 
 class SimulationWorld:
@@ -15,7 +18,6 @@ class SimulationWorld:
         self._add_lighting()
         
         # 바닥 (밝은 회색)
-        from omni.isaac.core.objects import GroundPlane
         ground = GroundPlane(
             prim_path="/World/Ground",
             size=10.0,
@@ -53,9 +55,6 @@ class SimulationWorld:
 
     def _add_lighting(self):
         """조명 추가"""
-        from pxr import UsdLux, Gf
-        from omni.isaac.core.utils.stage import get_current_stage
-        
         stage = get_current_stage()
         
         # Distant Light
@@ -77,3 +76,109 @@ class SimulationWorld:
 
     def step(self, render=True):
         self.world.step(render=render)
+
+
+# ============================================================
+# 메인 파일용 간단한 setup 함수
+# ============================================================
+
+def setup_world():
+    """
+    메인 파일에서 사용할 간단한 월드 설정 함수
+    
+    Returns:
+        world: World 객체
+        franka: Franka 로봇
+        camera: Camera 객체
+    """
+    print("[Setup] Creating world...")
+    world = World()
+    
+    # 조명
+    _add_lights()
+    
+    # 바닥
+    world.scene.add(
+        GroundPlane(
+            "/World/Ground",
+            z_position=0,
+            color=np.array([0.1, 0.2, 0.4])
+        )
+    )
+    
+    # 로봇
+    franka = world.scene.add(
+        Franka(prim_path="/World/Franka", name="franka")
+    )
+    
+    # 테이블
+    table = world.scene.add(
+        FixedCuboid(
+            prim_path="/World/Table",
+            name="table",
+            position=np.array([0.5, 0.0, 0.25]),
+            scale=np.array([0.6, 0.6, 0.5]),
+            color=np.array([0.6, 0.4, 0.2])
+        )
+    )
+    
+    # 큐브들 (3개)
+    cube_positions = [
+        [0.5, 0.0, 0.55],
+        [0.4, -0.15, 0.55],
+        [0.4, 0.15, 0.55],
+    ]
+    
+    cube_colors = [
+        [1.0, 0.0, 0.0],  # Red
+        [0.0, 0.0, 1.0],  # Blue
+        [1.0, 1.0, 0.0],  # Yellow
+    ]
+    
+    for i, (pos, color) in enumerate(zip(cube_positions, cube_colors)):
+        world.scene.add(
+            DynamicCuboid(
+                prim_path=f"/World/Cube_{i}",
+                name=f"cube_{i}",
+                position=pos,
+                scale=[0.05, 0.05, 0.05],
+                mass=0.05,
+                color=np.array(color)
+            )
+        )
+    
+    print(f"[Setup] Added {len(cube_positions)} cubes")
+    
+    # 카메라
+    from sim.camera import setup_camera
+    camera = setup_camera(world)
+    
+    # 월드 리셋
+    print("[Setup] Resetting world...")
+    world.reset()
+    
+    # 안정화
+    print("[Setup] Stabilizing...")
+    for _ in range(60):
+        world.step(render=True)
+    
+    print("[Setup] ✓ World setup complete!\n")
+    
+    return world, franka, camera
+
+
+def _add_lights():
+    """조명 설정"""
+    stage = get_current_stage()
+    
+    dome = UsdLux.DomeLight.Define(stage, "/World/DomeLight")
+    dome.CreateIntensityAttr(1000)
+    dome.CreateColorAttr((0.8, 0.9, 1.0))
+    
+    sun = UsdLux.DistantLight.Define(stage, "/World/DirectionalLight")
+    sun.CreateIntensityAttr(5000)
+    sun.CreateColorAttr((1.0, 0.95, 0.85))
+    
+    from pxr import UsdGeom
+    xform = UsdGeom.Xformable(sun)
+    xform.AddRotateXYZOp().Set((-45, 45, 0))

@@ -1,6 +1,6 @@
 """
-maim.py
-- Phase 포함
+main.py
+- Phase 1~4 모두 포함
 - 키보드로 모드 전환 (1/2/3/4 키)
 """
 
@@ -17,10 +17,10 @@ def main():
     print("로봇 학습 시스템 시작")
     print("="*60)
     
-    # 월드 생성
+    # 월드 생성 (로봇, 큐브, 카메라 포함)
     world, franka, camera = setup_world()
     
-    # 통합 컨트롤러
+    # 통합 컨트롤러 (모든 Phase 통합)
     controller = UnifiedController(franka, world, camera)
     
     # 메인 루프
