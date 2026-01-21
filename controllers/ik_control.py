@@ -9,6 +9,7 @@ Phase 2: IK Control
 import sys
 import os
 import numpy as np
+import time
 from omni.isaac.core.utils.types import ArticulationAction
 
 # 절대 경로로 utils 추가
