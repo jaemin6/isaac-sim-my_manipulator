@@ -6,15 +6,25 @@ Unified Controller
 - 각 Phase별 성능 비교
 """
 
+import sys
+import os
 import numpy as np
 import carb.input
 from omni.isaac.core.objects import VisualSphere
 from pxr import UsdPhysics
 from omni.isaac.core.utils.stage import get_current_stage
 
+# 경로 추가
+current_dir = os.path.dirname(os.path.abspath(__file__))
+parent_dir = os.path.dirname(current_dir)
+utils_dir = os.path.join(parent_dir, 'utils')
+
+sys.path.insert(0, parent_dir)
+sys.path.insert(0, utils_dir)
+
 from controllers.joint_control import JointController
 from controllers.ik_control import IKController
-from utils.cube_utils import get_all_cubes
+from cube_utils import get_all_cubes
 
 
 class UnifiedController:

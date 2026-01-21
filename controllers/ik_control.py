@@ -6,16 +6,26 @@ Phase 2: IK Control
 - mm 단위 정밀도
 """
 
+import sys
+import os
 import numpy as np
-import time
-from omni.isaac.core.utils.rotations import euler_angles_to_quat
-from utils.cube_utils import (
+from omni.isaac.core.utils.types import ArticulationAction
+
+# 절대 경로로 utils 추가
+current_dir = os.path.dirname(os.path.abspath(__file__))
+parent_dir = os.path.dirname(current_dir)
+utils_dir = os.path.join(parent_dir, 'utils')
+
+sys.path.insert(0, parent_dir)
+sys.path.insert(0, utils_dir)
+
+# utils. 접두사 없이 직접 import
+from cube_utils import (
     get_cube_position,
     find_nearest_cube,
     attach_cube_to_ee,
     detach_cube
 )
-
 
 class IKController:
     """Phase 2: IK Control"""

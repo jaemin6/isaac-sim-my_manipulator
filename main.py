@@ -1,11 +1,16 @@
 """
 main.py
-- Phase 1~4 모두 포함
+- Phase 포함
 - 키보드로 모드 전환 (1/2/3/4 키)
 """
 
 from isaacsim.simulation_app import SimulationApp
 simulation_app = SimulationApp({"headless": False})
+
+# Python 경로에 현재 디렉토리 추가
+import sys
+import os
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import omni.kit.app
 from sim.world import setup_world

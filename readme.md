@@ -80,3 +80,20 @@ Console log:
 [Init] EE: ...
 ...
 ✓ GRASP SEQUENCE COMPLETED
+```
+
+## 테스트 순서
+
+테스트 순서
+Phase 1 테스트 (현재 활성화됨):
+
+1. SPACE 키 누르기 → 자동 grasp
+2. P 키 누르기 → 자동 place
+3. M 키 누르기 → 모든 큐브 자동 처리
+
+Phase 2 테스트 (IK):
+
+1. 2 키 → Phase 2로 전환
+2. SPACE → IK로 정밀하게 grasp
+3. L 키 → 성능 로그 확인 (시간, 오차 측정)
+4. M 키 → 모든 큐브 처리 후 자동으로 성능 리포트!
