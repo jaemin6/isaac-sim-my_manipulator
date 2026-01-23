@@ -8,17 +8,21 @@ Phase 2: IK Control
 
 import sys
 import os
-import numpy as np
-import time
-from omni.isaac.core.utils.types import ArticulationAction
 
-# 절대 경로로 utils 추가
+# 절대 경로로 utils 추가를 먼저
 current_dir = os.path.dirname(os.path.abspath(__file__))
 parent_dir = os.path.dirname(current_dir)
 utils_dir = os.path.join(parent_dir, 'utils')
 
 sys.path.insert(0, parent_dir)
 sys.path.insert(0, utils_dir)
+
+# 그 다음 import
+import numpy as np
+import time
+from omni.isaac.core.utils.types import ArticulationAction
+
+
 
 # utils. 접두사 없이 직접 import
 from cube_utils import (
