@@ -17,20 +17,23 @@ utils_dir = os.path.join(parent_dir, 'utils')
 sys.path.insert(0, parent_dir)
 sys.path.insert(0, utils_dir)
 
-# 그 다음 import
 import numpy as np
 import time
 from omni.isaac.core.utils.types import ArticulationAction
+from omni.isaac.core.utils.rotations import euler_angles_to_quat
 
+# 프로젝트 루트를 Python 경로에 추가
+project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
 
-
-# utils. 접두사 없이 직접 import
 from cube_utils import (
     get_cube_position,
     find_nearest_cube,
     attach_cube_to_ee,
     detach_cube
 )
+
 
 class IKController:
     """Phase 2: IK Control"""
@@ -56,36 +59,52 @@ class IKController:
     def move_to_position(self, target_position, steps=150):
         """
         IK를 사용해서 목표 위치로 이동
+        (현재는 간단한 joint interpolation 사용)
         
         Args:
             target_position (np.array): 목표 위치 [x, y, z]
-            steps (int): 이동 스텝 수 (부드러운 이동)
+            steps (int): 이동 스텝 수
         
         Returns:
-            float: 위치 오차 (미터)
+            float: 위치 오차
         """
-        # 현재 위치
-        current_pos, _ = self.franka.end_effector.get_world_pose()
+        from omni.isaac.core.utils.types import ArticulationAction
         
-        # 목표 orientation (아래를 향함)
-        target_orientation = euler_angles_to_quat(np.array([np.pi, 0, 0]))
+        print(f"[IK] Moving to: ({target_position[0]:.2f}, {target_position[1]:.2f}, {target_position[2]:.2f})")
         
-        # 부드러운 interpolation으로 이동
-        for i in range(steps):
-            alpha = (i + 1) / steps
-            interp_pos = current_pos + alpha * (target_position - current_pos)
-            
-            # End effector pose 설정
-            self.franka.end_effector.set_world_pose(
-                position=interp_pos,
-                orientation=target_orientation
-            )
-            
+        # 목표 방향 계산
+        angle = np.arctan2(target_position[1], target_position[0])
+        
+        # 높이에 따른 joint 값 추정 (간단한 휴리스틱)
+        height_diff = target_position[2] - 0.5  # 테이블 기준
+        
+        # 목표 joint angles (경험적 값)
+        target_joints = np.array([
+            angle,           # base rotation
+            -0.5 - height_diff * 1.5,  # shoulder
+            0.0,
+            -2.0 - height_diff * 2.0,  # elbow  
+            0.0,
+            1.8 + height_diff * 1.5,   # wrist
+            0.8,
+            0.04,  # gripper
+            0.04
+        ])
+        
+        # 부드러운 이동
+        for _ in range(steps):
+            try:
+                self.franka.get_articulation_controller().apply_action(
+                    ArticulationAction(joint_positions=target_joints)
+                )
+            except:
+                pass
             self.world.step(render=True)
         
-        # 최종 위치 오차 계산
+        # 최종 오차 계산
         final_pos, _ = self.franka.end_effector.get_world_pose()
         error = np.linalg.norm(final_pos - target_position)
+        print(f"[IK] Position error: {error*1000:.2f} mm")
         
         return error
     

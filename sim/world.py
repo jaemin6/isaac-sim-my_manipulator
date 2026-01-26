@@ -122,7 +122,7 @@ def setup_world():
         )
     )
     
-    # 큐브들 (3개)
+    # 큐브들 (3개) - 무겁고 안정적으로
     cube_positions = [
         [0.5, 0.0, 0.55],
         [0.4, -0.15, 0.55],
@@ -142,7 +142,7 @@ def setup_world():
                 name=f"cube_{i}",
                 position=pos,
                 scale=[0.05, 0.05, 0.05],
-                mass=0.05,
+                mass=1.0,  # ← 0.05에서 1.0으로 (20배 무겁게!)
                 color=np.array(color)
             )
         )

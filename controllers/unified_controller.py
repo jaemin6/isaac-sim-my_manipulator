@@ -1,4 +1,3 @@
-# controllers/unified_controller.py
 """
 Unified Controller
 - 모든 Phase (1~4) 통합 관리
@@ -247,18 +246,18 @@ class UnifiedController:
         print(f"Processing {len(cubes)} cubes")
         print(f"{'='*60}\n")
         
-        base_x = 0.3
-        base_y = 0.2
+        base_x = 0.5  # 테이블 중앙
+        base_y = -0.1  # 중앙에서 시작
         spacing = 0.08
         
         for i, cube_info in enumerate(cubes):
             print(f"\n--- Cube {i+1}/{len(cubes)} ---")
             
-            # 목표 위치 설정
+            # 목표 위치 설정 (테이블 위)
             self.target_position = np.array([
                 base_x,
                 base_y + (i * spacing),
-                0.55
+                0.52  # 테이블 바로 위
             ])
             self.update_target_marker()
             
@@ -336,4 +335,3 @@ class UnifiedController:
             self.phase1.update()
         elif self.current_phase == 2:
             self.phase2.update()
-        # Phase 3, 4는 나중에
