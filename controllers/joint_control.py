@@ -280,10 +280,10 @@ class JointController:
             self.world.step(render=True)
         self.gripper_closed = False
         
-        # 6. Retreat
+        # 6. Retreat (높이 올라가기!)
         retreat_pose = place_pose.copy()
-        retreat_pose[1] += 0.3
-        retreat_pose[3] += 0.5
+        retreat_pose[1] += 0.5  # shoulder 더 높이!
+        retreat_pose[3] += 0.8  # elbow 더 높이!
         
         print("[Phase 1] Retreating...")
         for _ in range(120):

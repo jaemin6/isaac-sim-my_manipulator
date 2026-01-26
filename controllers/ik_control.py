@@ -8,18 +8,8 @@ Phase 2: IK Control
 
 import sys
 import os
-
-# 절대 경로로 utils 추가를 먼저
-current_dir = os.path.dirname(os.path.abspath(__file__))
-parent_dir = os.path.dirname(current_dir)
-utils_dir = os.path.join(parent_dir, 'utils')
-
-sys.path.insert(0, parent_dir)
-sys.path.insert(0, utils_dir)
-
 import numpy as np
 import time
-from omni.isaac.core.utils.types import ArticulationAction
 from omni.isaac.core.utils.rotations import euler_angles_to_quat
 
 # 프로젝트 루트를 Python 경로에 추가
@@ -27,7 +17,7 @@ project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
-from cube_utils import (
+from utils.cube_utils import (
     get_cube_position,
     find_nearest_cube,
     attach_cube_to_ee,
@@ -264,9 +254,9 @@ class IKController:
             self.world.step(render=True)
         self.gripper_closed = False
         
-        # 5. Retreat: 15cm 위로
+        # 5. Retreat: 높이 올리기 (충돌 방지!)
         retreat_pos = place_pos.copy()
-        retreat_pos[2] += 0.15
+        retreat_pos[2] += 0.20  # 20cm 위로! (기존 15cm)
         
         print("[IK] Step 4/4: Retreating...")
         self.move_to_position(retreat_pos, steps=120)
