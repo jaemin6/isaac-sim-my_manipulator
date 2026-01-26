@@ -257,7 +257,7 @@ class UnifiedController:
             self.target_position = np.array([
                 base_x,
                 base_y + (i * spacing),
-                0.52  # 테이블 바로 위
+                0.56  # 테이블 바로 위
             ])
             self.update_target_marker()
             

@@ -253,7 +253,7 @@ class JointController:
         
         # 3. Lower
         place_pose = hover_pose.copy()
-        place_pose[3] -= 0.4
+        place_pose[3] -= 0.3
         
         print("[Phase 1] Lowering...")
         for _ in range(100):
