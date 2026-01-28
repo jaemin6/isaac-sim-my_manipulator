@@ -1,5 +1,5 @@
+# controllers/Unified Controller
 """
-Unified Controller
 - 모든 Phase (1~4) 통합 관리
 - 키보드로 모드 전환
 - 각 Phase별 성능 비교
@@ -23,6 +23,7 @@ sys.path.insert(0, utils_dir)
 
 from controllers.joint_control import JointController
 from controllers.ik_control import IKController
+from controllers.vision_control import VisionController
 from cube_utils import get_all_cubes
 
 
@@ -37,7 +38,8 @@ class UnifiedController:
         # Phase 컨트롤러들
         self.phase1 = JointController(franka, world)
         self.phase2 = IKController(franka, world)
-        # Phase 3, 4는 나중에 추가
+        self.phase3 = VisionController(franka, world, camera)
+        # Phase 4는 나중에 추가
         
         # 현재 모드
         self.current_phase = 1
@@ -131,7 +133,8 @@ class UnifiedController:
             
             elif event.input == carb.input.KeyboardInput.KEY_3:
                 self.current_phase = 3
-                print(f"\n[Mode] Phase 3: Vision [준비중]")
+                print(f"\n[Mode] Phase 3: Vision-based")
+                self.print_phase_info()
             
             elif event.input == carb.input.KeyboardInput.KEY_4:
                 self.current_phase = 4
@@ -208,6 +211,10 @@ class UnifiedController:
             print("  - Inverse Kinematics 기반")
             print("  - mm 단위 정밀 제어")
             print("  - 성능 측정 자동 기록")
+        elif self.current_phase == 3:
+            print("  - 카메라 비전 기반 인식")
+            print("  - RGB 색상으로 큐브 감지")
+            print("  - Detection 오차 측정")
     
     # ===== 공통 인터페이스 =====
     
@@ -218,7 +225,7 @@ class UnifiedController:
         elif self.current_phase == 2:
             self.phase2.auto_grasp()
         elif self.current_phase == 3:
-            print("[Phase 3] Vision - 준비중")
+            self.phase3.auto_grasp()
         elif self.current_phase == 4:
             print("[Phase 4] RL - 준비중")
     
@@ -229,7 +236,7 @@ class UnifiedController:
         elif self.current_phase == 2:
             self.phase2.place(self.target_position)
         elif self.current_phase == 3:
-            print("[Phase 3] Vision - 준비중")
+            self.phase3.place(self.target_position)
         elif self.current_phase == 4:
             print("[Phase 4] RL - 준비중")
     
@@ -257,7 +264,7 @@ class UnifiedController:
             self.target_position = np.array([
                 base_x,
                 base_y + (i * spacing),
-                0.56  # 테이블 바로 위
+                0.52  # 테이블 바로 위
             ])
             self.update_target_marker()
             
@@ -266,6 +273,8 @@ class UnifiedController:
                 success = self.phase1.auto_grasp(cube_info['index'])
             elif self.current_phase == 2:
                 success = self.phase2.auto_grasp(cube_info['index'])
+            elif self.current_phase == 3:
+                success = self.phase3.auto_grasp(cube_info['index'])
             else:
                 print(f"[Phase {self.current_phase}] 준비중")
                 break
@@ -283,6 +292,8 @@ class UnifiedController:
                 self.phase1.place(self.target_position)
             elif self.current_phase == 2:
                 self.phase2.place(self.target_position)
+            elif self.current_phase == 3:
+                self.phase3.place(self.target_position)
             
             # 대기
             for _ in range(30):
@@ -292,14 +303,18 @@ class UnifiedController:
         print(f"✓ MULTI-CUBE COMPLETE")
         print(f"{'='*60}\n")
         
-        # Phase 2면 자동으로 성능 출력
+        # Phase 2, 3이면 자동으로 성능 출력
         if self.current_phase == 2:
             self.phase2.print_performance()
+        elif self.current_phase == 3:
+            self.phase3.print_performance()
     
     def show_performance(self):
         """성능 로그 출력"""
         if self.current_phase == 2:
             self.phase2.print_performance()
+        elif self.current_phase == 3:
+            self.phase3.print_performance()
         else:
             print(f"[Phase {self.current_phase}] Performance tracking not available")
     
@@ -320,11 +335,22 @@ class UnifiedController:
                 print(f"  Avg Error: {summary2['avg_position_error']*1000:.2f} mm")
             print()
         else:
-            print("Phase 2: No data yet")
+            print("Phase 2: No data yet\n")
+        
+        # Phase 3 성능
+        if self.phase3.performance['grasp_times']:
+            summary3 = self.phase3.get_performance_summary()
+            print("Phase 3: Vision Control")
+            print(f"  Grasps: {summary3['total_grasps']}")
+            if 'avg_grasp_time' in summary3:
+                print(f"  Avg Grasp Time: {summary3['avg_grasp_time']:.2f}s")
+            if 'avg_detection_error' in summary3:
+                print(f"  Avg Detection Error: {summary3['avg_detection_error']*1000:.2f} mm")
             print()
+        else:
+            print("Phase 3: No data yet\n")
         
         print("Phase 1: Joint Control - Manual tracking needed")
-        print("Phase 3: Vision - Not implemented")
         print("Phase 4: RL - Not implemented")
         
         print(f"\n{'='*60}\n")
@@ -335,3 +361,6 @@ class UnifiedController:
             self.phase1.update()
         elif self.current_phase == 2:
             self.phase2.update()
+        elif self.current_phase == 3:
+            self.phase3.update()
+        # Phase 4는 나중에

@@ -72,6 +72,13 @@ class VisionController:
         # RGB 이미지 가져오기
         rgb = self.camera.get_rgba()[:, :, :3]
         
+        # 디버그: 이미지 저장
+        import matplotlib.pyplot as plt
+        plt.imsave("debug_camera.png", rgb)
+        print(f"[Vision Debug] Camera image saved to debug_camera.png")
+        print(f"[Vision Debug] Image shape: {rgb.shape}, dtype: {rgb.dtype}")
+        print(f"[Vision Debug] Image range: [{rgb.min()}, {rgb.max()}]")
+        
         # BGR로 변환 (OpenCV)
         bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
         hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
@@ -81,16 +88,16 @@ class VisionController:
         # 색상 범위 정의 (HSV)
         color_ranges = {
             'red': {
-                'hsv_ranges': [([0, 100, 100], [10, 255, 255]), 
-                               ([170, 100, 100], [180, 255, 255])],  # Red wraps around
+                'hsv_ranges': [([0, 50, 50], [10, 255, 255]), 
+                               ([170, 50, 50], [180, 255, 255])],  # Red wraps around
                 'index': 0
             },
             'blue': {
-                'hsv_ranges': [([100, 100, 100], [130, 255, 255])],
+                'hsv_ranges': [([100, 50, 50], [130, 255, 255])],
                 'index': 1
             },
             'yellow': {
-                'hsv_ranges': [([20, 100, 100], [30, 255, 255])],
+                'hsv_ranges': [([20, 50, 50], [40, 255, 255])],
                 'index': 2
             }
         }
@@ -172,8 +179,7 @@ class VisionController:
         Returns:
             bool: 성공 여부
         """
-        start_time = time.time()
-        self.performance['grasp_times'].append(start_time)
+        start_time = time.time()  # 시작 시간
         
         print("\n[Phase 3: Vision] Starting vision-based grasp...")
         
@@ -292,7 +298,7 @@ class VisionController:
             self.world.step(render=True)
         
         elapsed = time.time() - start_time
-        self.performance['grasp_times'][-1] = elapsed
+        self.performance['grasp_times'].append(elapsed)  # 경과 시간 저장
         
         print(f"\n[Phase 3] ✓ Vision Grasp Complete!")
         print(f"  Time: {elapsed:.2f}s")
@@ -385,7 +391,7 @@ class VisionController:
         return True
     
     def get_performance_summary(self):
-        # 성능 요약
+        """성능 요약"""
         perf = self.performance
         
         summary = {
@@ -408,7 +414,7 @@ class VisionController:
         return summary
     
     def print_performance(self):
-        # 성능 출력
+        """성능 출력"""
         summary = self.get_performance_summary()
         
         print(f"\n{'='*60}")
@@ -429,5 +435,5 @@ class VisionController:
         print(f"{'='*60}\n")
     
     def update(self):
-        # 매 프레임 업데이트
+        """매 프레임 업데이트"""
         pass
