@@ -88,16 +88,16 @@ class VisionController:
         # 색상 범위 정의 (HSV)
         color_ranges = {
             'red': {
-                'hsv_ranges': [([0, 50, 50], [10, 255, 255]), 
-                               ([170, 50, 50], [180, 255, 255])],  # Red wraps around
+                'hsv_ranges': [([0, 30, 30], [15, 255, 255]), 
+                               ([165, 30, 30], [180, 255, 255])],  # Red wraps around
                 'index': 0
             },
             'blue': {
-                'hsv_ranges': [([100, 50, 50], [130, 255, 255])],
+                'hsv_ranges': [([90, 30, 30], [140, 255, 255])],
                 'index': 1
             },
             'yellow': {
-                'hsv_ranges': [([20, 50, 50], [40, 255, 255])],
+                'hsv_ranges': [([15, 30, 30], [45, 255, 255])],
                 'index': 2
             }
         }
