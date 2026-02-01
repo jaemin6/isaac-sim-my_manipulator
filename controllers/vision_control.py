@@ -57,55 +57,87 @@ class VisionController:
         print("[Phase 3] Vision Control initialized")
     
     def detect_cubes_from_camera(self):
-        """
-        카메라 이미지에서 큐브 감지
-        
-        Returns:
-            list: 감지된 큐브들 [{color, position, confidence}, ...]
-        """
+        """카메라 이미지에서 큐브 감지 (Replicator 기반)"""
         print("\n[Vision] Detecting cubes from camera...")
         
-        # 카메라 안정화
+        import omni.replicator.core as rep
+        
+        # Replicator 카메라 생성 (매번 새로 생성)
+        cam_pos, cam_rot = self.camera.get_world_pose()
+        
+        # Replicator 카메라 설정
+        rep_cam = rep.create.camera(
+            position=(cam_pos[0], cam_pos[1], cam_pos[2]),
+            look_at=(0.5, 0.0, 0.5)  # 테이블 중심을 향함
+        )
+        
+        # Render product 생성
+        rp = rep.create.render_product(rep_cam, (1024, 768))
+        
+        # RGB annotator 설정
+        rgb_annot = rep.AnnotatorRegistry.get_annotator("rgb")
+        rgb_annot.attach([rp])
+        
+        # 렌더링 실행
+        rep.orchestrator.step()
+        
+        # 데이터 획득 (재시도 로직)
+        rgb = None
         for _ in range(10):
             self.world.step(render=True)
+            rgb = rgb_annot.get_data()
+            if rgb is not None and len(rgb) > 0:
+                break
         
-        # RGB 이미지 가져오기
-        rgb = self.camera.get_rgba()[:, :, :3]
+        if rgb is None or len(rgb) == 0:
+            print("[Vision] Failed to get camera data!")
+            return []
+        
+        # NumPy 배열로 변환
+        img = np.array(rgb)
+        
+        # RGBA → RGB
+        if img.shape[2] == 4:
+            img = img[:, :, :3]
+        
+        # Float → Uint8
+        if img.dtype != np.uint8:
+            img = (np.clip(img, 0, 1) * 255).astype(np.uint8)
         
         # 디버그: 이미지 저장
-        import matplotlib.pyplot as plt
-        plt.imsave("debug_camera.png", rgb)
+        cv2.imwrite("debug_camera.png", cv2.cvtColor(img, cv2.COLOR_RGB2BGR))
         print(f"[Vision Debug] Camera image saved to debug_camera.png")
-        print(f"[Vision Debug] Image shape: {rgb.shape}, dtype: {rgb.dtype}")
-        print(f"[Vision Debug] Image range: [{rgb.min()}, {rgb.max()}]")
+        print(f"[Vision Debug] Image shape: {img.shape}, dtype: {img.dtype}")
+        print(f"[Vision Debug] Image range: [{img.min()}, {img.max()}]")
         
-        # BGR로 변환 (OpenCV)
-        bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
-        hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
+        # HSV 변환
+        hsv = cv2.cvtColor(img, cv2.COLOR_RGB2HSV)
         
         detected_cubes = []
         
-        # 색상 범위 정의 (HSV) - 더 넓게!
+        # 수정된 색상 범위 (Replicator 렌더링 기준)
         color_ranges = {
             'red': {
-                'hsv_ranges': [([0, 50, 50], [15, 255, 255]),      # Red 하한
-                               ([165, 50, 50], [180, 255, 255])],   # Red 상한 (wraps)
+                'hsv_ranges': [([0, 50, 100], [15, 255, 255])],
                 'index': 0
             },
-            'blue': {
-                'hsv_ranges': [([90, 50, 50], [135, 255, 255])],   # Blue
+            'green': {
+                'hsv_ranges': [([40, 50, 100], [85, 255, 255])],
                 'index': 1
             },
-            'yellow': {
-                'hsv_ranges': [([15, 50, 50], [35, 255, 255])],    # Yellow
+            'blue': {
+                'hsv_ranges': [([95, 50, 80], [135, 255, 255])],
                 'index': 2
+            },
+            'yellow': {
+                'hsv_ranges': [([20, 100, 150], [35, 255, 255])],
+                'index': 3
             }
         }
         
-        img_h, img_w = rgb.shape[:2]
+        img_h, img_w = img.shape[:2]
         
         for color_name, color_info in color_ranges.items():
-            # 모든 HSV 범위에 대해 마스크 생성
             mask = np.zeros((img_h, img_w), dtype=np.uint8)
             
             for lower, upper in color_info['hsv_ranges']:
@@ -127,7 +159,7 @@ class VisionController:
             
             for cnt in contours:
                 area = cv2.contourArea(cnt)
-                if area > 200:  # 최소 크기
+                if area > 1000:  # 최소 크기
                     M = cv2.moments(cnt)
                     if M["m00"] != 0:
                         cx = int(M["m10"] / M["m00"])
@@ -142,7 +174,7 @@ class VisionController:
                             'position': world_pos,
                             'pixel_pos': (cx, cy),
                             'area': area,
-                            'confidence': min(area / 1000.0, 1.0)
+                            'confidence': min(area / 2000.0, 1.0)
                         })
         
         print(f"[Vision] Detected {len(detected_cubes)} cubes:")
