@@ -1,157 +1,91 @@
-# simple_test.py - 가장 기본적인 카메라 테스트
+# camera_debug.py - Replicator 안정화 버전
 from isaacsim.simulation_app import SimulationApp
 simulation_app = SimulationApp({"headless": False})
 
 from omni.isaac.core import World
-from omni.isaac.core.objects import DynamicCuboid, VisualCuboid
-from omni.isaac.sensor import Camera
+import omni.replicator.core as rep
 import numpy as np
 import cv2
+import os
+from pxr import Gf, UsdGeom, UsdShade, Sdf
+
+def create_colored_cube(stage, path, position, size, color):
+    cube_geom = UsdGeom.Cube.Define(stage, path)
+    cube_geom.CreateSizeAttr(size)
+    cube_geom.AddTranslateOp().Set(Gf.Vec3d(position[0], position[1], position[2]))
+    material_path = f"{path}/Material"
+    material = UsdShade.Material.Define(stage, material_path)
+    shader = UsdShade.Shader.Define(stage, f"{material_path}/Shader")
+    shader.CreateIdAttr("UsdPreviewSurface")
+    shader.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).Set(Gf.Vec3f(color[0], color[1], color[2]))
+    material.CreateSurfaceOutput().ConnectToSource(shader.ConnectableAPI(), "surface")
+    UsdShade.MaterialBindingAPI(cube_geom).Bind(material)
 
 def main():
-    # World 생성
     world = World()
     world.scene.add_default_ground_plane()
+    stage = world.stage
     
-    print("Adding test objects...")
+    # 조명 설정
+    from pxr import UsdLux
+    dome_light = UsdLux.DomeLight.Define(stage, "/World/DomeLight")
+    dome_light.CreateIntensityAttr(1000.0)
     
-    # 여러 개의 큐브 추가 (더 눈에 띄게)
-    colors = [
-        [1.0, 0.0, 0.0],  # 빨강
-        [0.0, 1.0, 0.0],  # 초록
-        [0.0, 0.0, 1.0],  # 파랑
-        [1.0, 1.0, 0.0],  # 노랑
-    ]
+    print("\n[Setup] Creating colored cubes...")
+    colors = [[1, 0, 0], [0, 1, 0], [0, 0, 1], [1, 1, 0]]
+    positions = [[0.3, 0.3, 0.2], [0.3, -0.3, 0.2], [-0.3, 0.3, 0.2], [-0.3, -0.3, 0.2]]
     
-    positions = [
-        [0.0, 0.0, 0.5],
-        [0.5, 0.0, 0.5],
-        [0.0, 0.5, 0.5],
-        [-0.5, 0.0, 0.5],
-    ]
-    
-    cubes = []
     for i, (pos, color) in enumerate(zip(positions, colors)):
-        cube = VisualCuboid(
-            prim_path=f"/World/Cube_{i}",
-            name=f"cube_{i}",
-            position=np.array(pos),
-            size=0.3,  # 크기 증가
-            color=np.array(color)
-        )
-        cubes.append(cube)
-        print(f"  Added cube {i} at {pos} with color {color}")
+        create_colored_cube(stage, f"/World/Cube_{i}", pos, 0.2, color) # 크기 0.2로 확대
     
     world.reset()
     
-    print("\nWarming up world...")
-    for _ in range(60):
-        world.step(render=True)
-    
-    print("\nWorld contains:")
-    print(f"  Ground plane: {world.scene.get_object('default_ground_plane')}")
-    for i in range(len(cubes)):
-        print(f"  Cube {i}: {world.scene.get_object(f'cube_{i}')}")
-    
-    # 카메라 설정들을 하나씩 테스트
-    camera_tests = [
-        {
-            "name": "very_high_topdown",
-            "position": np.array([0.0, 0.0, 5.0]),
-            "target": np.array([0.0, 0.0, 0.0]),
-        },
-        {
-            "name": "medium_topdown", 
-            "position": np.array([0.0, 0.0, 3.0]),
-            "target": np.array([0.0, 0.0, 0.5]),
-        },
-        {
-            "name": "close_topdown",
-            "position": np.array([0.0, 0.0, 1.5]),
-            "target": np.array([0.0, 0.0, 0.5]),
-        },
-        {
-            "name": "angled",
-            "position": np.array([2.0, 2.0, 2.0]),
-            "target": np.array([0.0, 0.0, 0.5]),
-        },
+    # 카메라 설정 (해상도 1024x768로 상향하여 DLSS 오류 방지)
+    camera_configs = [
+        {"name": "topdown", "pos": (0.0, 0.0, 2.5), "look": (0.0, 0.0, 0.0)},
+        {"name": "angled", "pos": (1.5, 1.5, 1.5), "look": (0.0, 0.0, 0.0)},
     ]
-    
-    for config in camera_tests:
-        print(f"\n{'='*60}")
-        print(f"Testing: {config['name']}")
-        print(f"Position: {config['position']}")
-        print(f"Target: {config['target']}")
-        print(f"{'='*60}")
+
+    for config in camera_configs:
+        print(f"\n[Rendering] Testing camera: {config['name']}")
         
-        # 카메라 생성
-        camera = Camera(
-            prim_path=f"/World/Camera_{config['name']}",
-            position=config['position'],
-            resolution=(640, 480),
-        )
-        camera.initialize()
+        # 1. Replicator 카메라 및 렌더 프러덕트 생성
+        cam = rep.create.camera(position=config["pos"], look_at=config["look"])
+        rp = rep.create.render_product(cam, (1024, 768)) # 해상도 상향
         
-        # look_at 사용
-        camera.set_world_pose(
-            position=config['position'],
-        )
+        # 2. RGB 어노테이터 설정 및 연결
+        rgb_annot = rep.AnnotatorRegistry.get_annotator("rgb")
+        rgb_annot.attach([rp])
         
-        # 타겟을 향하도록 설정
-        from pxr import Gf
-        look_at = Gf.Vec3d(config['target'][0], config['target'][1], config['target'][2])
-        up = Gf.Vec3d(0, 0, 1)
+        # 3. 중요: Replicator가 한 프레임을 렌더링하도록 대기
+        # 단순 world.step보다 Orchestrator 조작이 더 확실합니다.
+        rep.orchestrator.step() 
         
-        # 카메라 방향 계산
-        forward = look_at - Gf.Vec3d(config['position'][0], config['position'][1], config['position'][2])
-        forward = forward.GetNormalized()
-        
-        print(f"Forward direction: {forward}")
-        
-        # 워밍업
-        for _ in range(30):
+        # 4. 데이터 획득 시도 (여러 번 시도)
+        rgb = None
+        for i in range(10): # 최대 10프레임 대기하며 데이터 확인
             world.step(render=True)
-        
-        # 이미지 캡처
-        rgb = camera.get_rgb()
+            rgb = rgb_annot.get_data()
+            if rgb is not None and len(rgb) > 0:
+                break
         
         if rgb is not None:
-            print(f"✓ Captured: shape={rgb.shape}, dtype={rgb.dtype}")
-            print(f"  Stats: min={rgb.min()}, max={rgb.max()}, mean={rgb.mean():.2f}")
+            img = np.array(rgb)
+            if img.shape[2] == 4: img = img[:, :, :3] # RGBA -> RGB
             
-            # 저장
-            if rgb.shape[2] == 4:
-                rgb = rgb[:, :, :3]
+            # 타입 변환
+            if img.dtype != np.uint8:
+                img = (np.clip(img, 0, 1) * 255).astype(np.uint8)
             
-            save_path = f"/tmp/test_{config['name']}.png"
-            cv2.imwrite(save_path, cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR))
-            print(f"  Saved: {save_path}")
+            # 저장 경로를 현재 폴더로 변경
+            save_path = os.path.join(os.getcwd(), f"debug_{config['name']}.png")
+            cv2.imwrite(save_path, cv2.cvtColor(img, cv2.COLOR_RGB2BGR))
+            print(f"  ✓ SUCCESS: Saved to {save_path}")
         else:
-            print(f"✗ Failed to capture")
-        
-        # 다음 테스트를 위해 대기
-        for _ in range(10):
-            world.step(render=True)
+            print(f"  ✗ FAILED: Could not get RGB data for {config['name']}")
     
-    print("\n" + "="*60)
-    print("All tests completed!")
-    print("Check images at /tmp/test_*.png")
-    print("="*60)
-    
-    # 마지막으로 GUI에서 확인할 수 있도록 대기
-    print("\nPress Ctrl+C to exit...")
-    try:
-        while simulation_app.is_running():
-            world.step(render=True)
-    except KeyboardInterrupt:
-        pass
+    print("\nCheck the current folder for debug_*.png files.")
+    simulation_app.close()
 
 if __name__ == "__main__":
-    try:
-        main()
-    except Exception as e:
-        print(f"Error: {e}")
-        import traceback
-        traceback.print_exc()
-    finally:
-        simulation_app.close()
+    main()

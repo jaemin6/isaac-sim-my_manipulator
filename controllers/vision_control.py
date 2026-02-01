@@ -85,19 +85,19 @@ class VisionController:
         
         detected_cubes = []
         
-        # 색상 범위 정의 (HSV)
+        # 색상 범위 정의 (HSV) - 더 넓게!
         color_ranges = {
             'red': {
-                'hsv_ranges': [([0, 30, 30], [15, 255, 255]), 
-                               ([165, 30, 30], [180, 255, 255])],  # Red wraps around
+                'hsv_ranges': [([0, 50, 50], [15, 255, 255]),      # Red 하한
+                               ([165, 50, 50], [180, 255, 255])],   # Red 상한 (wraps)
                 'index': 0
             },
             'blue': {
-                'hsv_ranges': [([90, 30, 30], [140, 255, 255])],
+                'hsv_ranges': [([90, 50, 50], [135, 255, 255])],   # Blue
                 'index': 1
             },
             'yellow': {
-                'hsv_ranges': [([15, 30, 30], [45, 255, 255])],
+                'hsv_ranges': [([15, 50, 50], [35, 255, 255])],    # Yellow
                 'index': 2
             }
         }
@@ -113,6 +113,9 @@ class VisionController:
                 upper = np.array(upper)
                 mask_part = cv2.inRange(hsv, lower, upper)
                 mask = cv2.bitwise_or(mask, mask_part)
+            
+            # 디버그: 마스크 저장
+            cv2.imwrite(f"debug_mask_{color_name}.png", mask)
             
             # 노이즈 제거
             kernel = np.ones((5, 5), np.uint8)
