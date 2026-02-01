@@ -83,14 +83,7 @@ class SimulationWorld:
 # ============================================================
 
 def setup_world():
-    """
-    메인 파일에서 사용할 간단한 월드 설정 함수
-    
-    Returns:
-        world: World 객체
-        franka: Franka 로봇
-        camera: Camera 객체
-    """
+    """메인 파일에서 사용할 간단한 월드 설정 함수"""
     print("[Setup] Creating world...")
     world = World()
     
@@ -122,7 +115,7 @@ def setup_world():
         )
     )
     
-    # 큐브들 (3개) - 무겁고 안정적으로
+    # 큐브들
     cube_positions = [
         [0.5, 0.0, 0.55],
         [0.4, -0.15, 0.55],
@@ -142,16 +135,38 @@ def setup_world():
                 name=f"cube_{i}",
                 position=pos,
                 scale=[0.05, 0.05, 0.05],
-                mass=1.0,  # ← 0.05에서 1.0으로 (20배 무겁게!)
+                mass=1.0,
                 color=np.array(color)
             )
         )
     
     print(f"[Setup] Added {len(cube_positions)} cubes")
     
-    # 카메라
-    from sim.camera import setup_camera
-    camera = setup_camera(world)
+    # ===== 카메라 직접 설정 (수정!) =====
+    from omni.isaac.sensor import Camera
+    from scipy.spatial.transform import Rotation as R
+    
+    camera = Camera(
+        prim_path="/World/Camera",
+        position=np.array([0.5, 0.0, 1.2]),  # 테이블 위 1.2m
+        resolution=(1024, 768),
+        frequency=20
+    )
+    
+    # 카메라가 아래를 향하도록 설정
+    # 90도 회전 (X축 기준)
+    rot = R.from_euler('x', 90, degrees=True)
+    quat = rot.as_quat()  # [x, y, z, w]
+    orientation = np.array([quat[3], quat[0], quat[1], quat[2]])  # [w, x, y, z]
+    
+    camera.set_world_pose(
+        position=np.array([0.5, 0.0, 1.2]),
+        orientation=orientation
+    )
+    
+    camera.initialize()
+    print("[Setup] Camera configured to look down at table")
+    # =====================================
     
     # 월드 리셋
     print("[Setup] Resetting world...")
