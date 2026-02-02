@@ -62,14 +62,17 @@ class VisionController:
         
         import omni.replicator.core as rep
         
-        # Replicator 카메라 생성 (매번 새로 생성)
-        cam_pos, cam_rot = self.camera.get_world_pose()
+        # ===== 카메라 설정 수정 =====
+        # 테이블 위 큐브들을 내려다보는 위치
+        camera_position = (0.6, 0.0, 1.3)  # 테이블 중심 위 1.2m
+        look_at_target = (0.45, 0.0, 0.0)  # 큐브들이 있는 테이블 표면
         
-        # Replicator 카메라 설정
         rep_cam = rep.create.camera(
-            position=(cam_pos[0], cam_pos[1], cam_pos[2]),
-            look_at=(0.5, 0.0, 0.5)  # 테이블 중심을 향함
+            position=camera_position,
+            look_at=look_at_target,
+            focal_length=12.0
         )
+        # ===========================
         
         # Render product 생성
         rp = rep.create.render_product(rep_cam, (1024, 768))
@@ -92,8 +95,8 @@ class VisionController:
         if rgb is None or len(rgb) == 0:
             print("[Vision] Failed to get camera data!")
             return []
-        
-        # NumPy 배열로 변환
+            
+        # NumPy 배열로 변환 (함수 내부로 들여쓰기 정렬)
         img = np.array(rgb)
         
         # RGBA → RGB
@@ -118,19 +121,19 @@ class VisionController:
         # 수정된 색상 범위 (Replicator 렌더링 기준)
         color_ranges = {
             'red': {
-                'hsv_ranges': [([0, 50, 100], [15, 255, 255])],
+                'hsv_ranges': [([0, 100, 100], [10, 255, 255]), ([170, 100, 100], [180, 255, 255])],
                 'index': 0
             },
             'green': {
-                'hsv_ranges': [([40, 50, 100], [85, 255, 255])],
+                'hsv_ranges': [([40, 70, 70], [80, 255, 255])],
                 'index': 1
             },
             'blue': {
-                'hsv_ranges': [([95, 50, 80], [135, 255, 255])],
+                'hsv_ranges': [([100, 100, 100], [130, 255, 255])],
                 'index': 2
             },
             'yellow': {
-                'hsv_ranges': [([20, 100, 150], [35, 255, 255])],
+                'hsv_ranges': [([20, 100, 100], [35, 255, 255])],
                 'index': 3
             }
         }
