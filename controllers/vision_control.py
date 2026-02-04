@@ -64,7 +64,7 @@ class VisionController:
         
         # ===== 카메라 설정 수정 =====
         # 테이블 위 큐브들을 내려다보는 위치
-        camera_position = (0.5, 0.0, 1.2)  # 테이블 중심 위 1.2m
+        camera_position = (1.0, 0.8, 1.2)  # 테이블 중심 위 1.2m
         look_at_target = (0.5, 0.0, 0.0)  # 큐브들이 있는 테이블 표면
         
         rep_cam = rep.create.camera(
@@ -86,7 +86,7 @@ class VisionController:
         
         # 데이터 획득 (재시도 로직)
         rgb = None
-        for _ in range(10):
+        for _ in range(50):
             self.world.step(render=True)
             rgb = rgb_annot.get_data()
             if rgb is not None and len(rgb) > 0:
@@ -196,11 +196,12 @@ class VisionController:
         norm_y = (py - img_h/2) / (img_h/2)
         
         # 통합 스케일 적용
-        scale = 0.55
+        scale_x = 0.55
+        scale_y = 0.75
         
         # 카메라가 (0.5, 0.0, 1.2)에서 아래를 봄
-        world_x = 0.5 - (norm_y * scale)
-        world_y = -(norm_x * scale)
+        world_x = 0.4 + 0.15 - (norm_y * scale_x)
+        world_y = -(norm_x * scale_y)
         world_z = 0.05  # 테이블 위 (추정)
         
         return np.array([world_x, world_y, world_z])
