@@ -1,16 +1,14 @@
 # controllers/vision_control.py
 """
-Phase 3: Vision-based Control (FIXED VERSION)
-- 개선된 색상 감지 (4가지 색상 모두 인식)
-- 정확한 픽셀-월드 좌표 변환
-- Ground Truth 기반 자동 보정
-- 디버그 시각화
+Phase 3: Vision-based Control (HOMOGRAPHY VERSION)
+- 카메라 위치 고정 (1.0, 0.0, 1.5)
+- Homography 기반 정확한 좌표 변환
+- 4개 큐브로 초기 캘리브레이션
 """
 
 import sys
 import os
 
-# 경로 추가
 current_dir = os.path.dirname(os.path.abspath(__file__))
 parent_dir = os.path.dirname(current_dir)
 utils_dir = os.path.join(parent_dir, 'utils')
@@ -31,7 +29,7 @@ from cube_utils import (
 
 
 class VisionController:
-    """Phase 3: Vision-based Control (Fixed)"""
+    """Phase 3: Vision-based Control (Homography)"""
     
     def __init__(self, franka, world, camera):
         self.franka = franka
@@ -55,31 +53,19 @@ class VisionController:
         # 카메라 초기화
         self.camera.initialize()
         
-        # 보정 파라미터 (초기값)
-        self.calibration = {
-            'scale_x': 0.5,
-            'scale_y': 0.5,
-            'offset_x': 0.5,
-            'offset_y': 0.0
-        }
+        # Homography 행렬 (초기화 후 설정)
+        self.homography_matrix = None
+        self.calibrated = False
         
-        print("[Phase 3] Vision Control (Fixed) initialized")
+        print("[Phase 3] Vision Control (Homography) initialized")
+        print("[Vision] ⚠️  Run calibration first: controller.calibrate_homography()")
     
     def detect_cubes_from_camera(self, visualize=True):
-        """
-        카메라 이미지에서 큐브 감지
-        
-        Args:
-            visualize (bool): 디버그 이미지 저장 여부
-        
-        Returns:
-            list: 감지된 큐브 정보
-        """
-        print("\n[Vision] Detecting cubes from camera...")
+        """카메라 이미지에서 큐브 감지"""
         
         import omni.replicator.core as rep
         
-        # ===== 카메라 설정 (고정) =====
+        # 카메라 설정 (고정)
         camera_position = (1.0, 0.0, 1.5)
         look_at_target = (0.5, 0.0, 0.0)
         
@@ -88,16 +74,15 @@ class VisionController:
             look_at=look_at_target,
             focal_length=12.0
         )
-        # =============================
         
-        # Render product 생성
+        # Render product
         rp = rep.create.render_product(rep_cam, (1024, 768))
         
-        # RGB annotator 설정
+        # RGB annotator
         rgb_annot = rep.AnnotatorRegistry.get_annotator("rgb")
         rgb_annot.attach([rp])
         
-        # 렌더링 실행
+        # 렌더링
         rep.orchestrator.step()
         
         # 데이터 획득
@@ -112,63 +97,54 @@ class VisionController:
             print("[Vision] Failed to get camera data!")
             return []
         
-        # NumPy 배열로 변환
+        # 이미지 변환
         img = np.array(rgb)
-        
-        # RGBA → RGB
         if img.shape[2] == 4:
             img = img[:, :, :3]
-        
-        # Float → Uint8
         if img.dtype != np.uint8:
             img = (np.clip(img, 0, 1) * 255).astype(np.uint8)
         
-        # 디버그 정보
-        print(f"[Vision Debug] Image shape: {img.shape}, dtype: {img.dtype}")
-        print(f"[Vision Debug] Image range: [{img.min()}, {img.max()}]")
+        # 밝기 정규화 (핵심!)
+        img_normalized = self._normalize_brightness(img)
+        
+        print(f"[Vision Debug] Image shape: {img.shape}")
+        print(f"[Vision Debug] Original range: [{img.min()}, {img.max()}]")
+        print(f"[Vision Debug] Normalized range: [{img_normalized.min()}, {img_normalized.max()}]")
         
         # HSV 변환
-        hsv = cv2.cvtColor(img, cv2.COLOR_RGB2HSV)
+        hsv = cv2.cvtColor(img_normalized, cv2.COLOR_RGB2HSV)
         
         detected_cubes = []
+        debug_img = img.copy()
         
-        # ===== 개선된 색상 범위 =====
-        # Replicator 렌더링에 맞춰 조정
+        # 개선된 색상 범위 (밝기 정규화 후)
         color_ranges = {
             'red': {
                 'hsv_ranges': [
-                    ([0, 70, 70], [10, 255, 255]),      # 낮은 빨강
-                    ([170, 70, 70], [180, 255, 255])    # 높은 빨강
+                    ([0, 100, 100], [10, 255, 255]),
+                    ([170, 100, 100], [180, 255, 255])
                 ],
-                'index': 0,
-                'rgb_check': (180, 70, 70)  # 대략적인 RGB 값
+                'index': 0
             },
             'green': {
-                'hsv_ranges': [([40, 60, 60], [85, 255, 255])],
-                'index': 1,
-                'rgb_check': (60, 180, 60)
+                'hsv_ranges': [([50, 100, 100], [80, 255, 255])],
+                'index': 1
             },
             'blue': {
-                'hsv_ranges': [([90, 60, 60], [130, 255, 255])],
-                'index': 2,
-                'rgb_check': (60, 60, 180)
+                'hsv_ranges': [([100, 100, 100], [130, 255, 255])],
+                'index': 2
             },
             'yellow': {
-                'hsv_ranges': [([15, 100, 100], [35, 255, 255])],
-                'index': 3,
-                'rgb_check': (200, 200, 60)
+                'hsv_ranges': [([20, 100, 100], [35, 255, 255])],
+                'index': 3
             }
         }
         
         img_h, img_w = img.shape[:2]
         
-        # 디버그용 이미지 복사
-        debug_img = img.copy()
-        
         for color_name, color_info in color_ranges.items():
             mask = np.zeros((img_h, img_w), dtype=np.uint8)
             
-            # 여러 HSV 범위 합치기
             for lower, upper in color_info['hsv_ranges']:
                 lower = np.array(lower)
                 upper = np.array(upper)
@@ -176,106 +152,208 @@ class VisionController:
                 mask = cv2.bitwise_or(mask, mask_part)
             
             # 노이즈 제거
-            kernel = np.ones((5, 5), np.uint8)
+            kernel = np.ones((7, 7), np.uint8)
             mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
             mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
             
-            # Contour 찾기
+            # Contour
             contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
             
             for cnt in contours:
                 area = cv2.contourArea(cnt)
-                if area > 500:  # 최소 크기 (더 작게)
+                if area > 300:  # 최소 크기
                     M = cv2.moments(cnt)
                     if M["m00"] != 0:
                         cx = int(M["m10"] / M["m00"])
                         cy = int(M["m01"] / M["m00"])
                         
-                        # 픽셀 → 월드 좌표 변환
-                        world_pos = self._pixel_to_world(cx, cy, img_w, img_h)
+                        # Homography로 변환
+                        if self.homography_matrix is not None:
+                            world_pos = self._pixel_to_world_homography(cx, cy)
+                        else:
+                            world_pos = np.array([0.5, 0.0, 0.025])
                         
                         cube_info = {
                             'color': color_name,
                             'index': color_info['index'],
                             'position': world_pos,
                             'pixel_pos': (cx, cy),
-                            'area': area,
-                            'confidence': min(area / 2000.0, 1.0)
+                            'area': area
                         }
                         
                         detected_cubes.append(cube_info)
                         
-                        # 디버그 이미지에 그리기
+                        # 시각화
                         if visualize:
-                            # Bounding box
                             x, y, w, h = cv2.boundingRect(cnt)
                             cv2.rectangle(debug_img, (x, y), (x+w, y+h), (0, 255, 0), 2)
-                            
-                            # 중심점
                             cv2.circle(debug_img, (cx, cy), 5, (0, 0, 255), -1)
-                            
-                            # 텍스트
-                            text = f"{color_name} ({world_pos[0]:.2f}, {world_pos[1]:.2f})"
+                            text = f"{color_name}"
                             cv2.putText(debug_img, text, (x, y-10),
-                                      cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
+                                      cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
             
-            # 마스크 저장
             if visualize:
                 cv2.imwrite(f"debug_mask_{color_name}.png", mask)
         
-        # 디버그 이미지 저장
-        if visualize:
-            cv2.imwrite("debug_camera.png", cv2.cvtColor(img, cv2.COLOR_RGB2BGR))
-            cv2.imwrite("debug_detection.png", cv2.cvtColor(debug_img, cv2.COLOR_RGB2BGR))
-            print(f"[Vision Debug] Saved: debug_camera.png, debug_detection.png")
-        
-        # Ground Truth와 매칭
+        # Ground Truth 매칭
         detected_cubes = self._match_with_ground_truth(detected_cubes)
         
+        if visualize:
+            cv2.imwrite("debug_camera.png", cv2.cvtColor(img, cv2.COLOR_RGB2BGR))
+            cv2.imwrite("debug_normalized.png", cv2.cvtColor(img_normalized, cv2.COLOR_RGB2BGR))
+            cv2.imwrite("debug_detection.png", cv2.cvtColor(debug_img, cv2.COLOR_RGB2BGR))
+        
+        # 결과 출력
         print(f"[Vision] Detected {len(detected_cubes)} cubes:")
         for cube in detected_cubes:
             gt_pos = get_cube_position(cube['index'])
             if gt_pos is not None:
-                error = np.linalg.norm(cube['position'] - gt_pos)
-                print(f"  {cube['color']} (Cube_{cube['index']}): Vision=({cube['position'][0]:.2f}, {cube['position'][1]:.2f}) | GT=({gt_pos[0]:.2f}, {gt_pos[1]:.2f}) | Error={error*1000:.1f}mm")
-            else:
-                print(f"  {cube['color']}: ({cube['position'][0]:.2f}, {cube['position'][1]:.2f})")
+                error = np.linalg.norm(cube['position'][:2] - gt_pos[:2])
+                print(f"  {cube['color']} (Cube_{cube['index']}): "
+                      f"Pixel=({cube['pixel_pos'][0]}, {cube['pixel_pos'][1]}) | "
+                      f"Vision=({cube['position'][0]:.2f}, {cube['position'][1]:.2f}) | "
+                      f"GT=({gt_pos[0]:.2f}, {gt_pos[1]:.2f}) | "
+                      f"Error={error*1000:.1f}mm")
         
         return detected_cubes
     
-    def _pixel_to_world(self, px, py, img_w, img_h):
+    def _normalize_brightness(self, img):
         """
-        픽셀 좌표 → 월드 좌표 변환
-        
-        카메라: (1.0, 0.0, 1.5)
-        Look at: (0.5, 0.0, 0.0)
+        밝기 정규화 (CLAHE)
+        → 조명 변화에 강인하게
         """
-        # 정규화 (-1 to 1)
-        norm_x = (px - img_w/2) / (img_w/2)
-        norm_y = (py - img_h/2) / (img_h/2)
+        # LAB 색공간 변환
+        lab = cv2.cvtColor(img, cv2.COLOR_RGB2LAB)
+        l, a, b = cv2.split(lab)
         
-        # 보정 파라미터 적용
-        cal = self.calibration
+        # L 채널만 CLAHE 적용
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+        l_clahe = clahe.apply(l)
         
-        # 변환 공식
-        # Y축 (좌우) → norm_x와 반대
-        # X축 (앞뒤) → norm_y와 비례
-        world_x = cal['offset_x'] + (norm_y * cal['scale_x'])
-        world_y = cal['offset_y'] - (norm_x * cal['scale_y'])
-        world_z = 0.025  # 큐브 절반 높이
+        # 재결합
+        lab_clahe = cv2.merge([l_clahe, a, b])
+        img_normalized = cv2.cvtColor(lab_clahe, cv2.COLOR_LAB2RGB)
+        
+        return img_normalized
+    
+    def _pixel_to_world_homography(self, px, py):
+        """Homography로 픽셀 → 월드 변환"""
+        if self.homography_matrix is None:
+            return np.array([0.5, 0.0, 0.025])
+        
+        # 동차 좌표
+        pixel_point = np.array([[px, py]], dtype=np.float32)
+        
+        # 변환
+        world_point = cv2.perspectiveTransform(
+            pixel_point.reshape(1, 1, 2),
+            self.homography_matrix
+        )
+        
+        world_x = world_point[0, 0, 0]
+        world_y = world_point[0, 0, 1]
+        world_z = 0.025
         
         return np.array([world_x, world_y, world_z])
     
-    def _match_with_ground_truth(self, detected_cubes):
+    def calibrate_homography(self):
         """
-        Ground Truth와 매칭하여 index 보정
-        
-        Args:
-            detected_cubes (list): 감지된 큐브들
+        4개 큐브로 Homography 보정
         
         Returns:
-            list: 매칭된 큐브들
+            bool: 성공 여부
         """
+        print("\n" + "="*60)
+        print("HOMOGRAPHY CALIBRATION")
+        print("="*60)
+        
+        # 큐브 감지 (Homography 없이)
+        self.homography_matrix = None
+        detected = self.detect_cubes_from_camera(visualize=False)
+        
+        if len(detected) < 4:
+            print(f"[Vision] Need 4 cubes for calibration! (found {len(detected)})")
+            return False
+        
+        # 픽셀 좌표와 월드 좌표 수집
+        pixel_points = []
+        world_points = []
+        
+        for i in range(4):
+            gt_pos = get_cube_position(i)
+            if gt_pos is None:
+                continue
+            
+            # 해당 큐브 찾기
+            found = False
+            for cube in detected:
+                dist = np.linalg.norm(
+                    np.array(cube['pixel_pos']) - np.array(detected[i]['pixel_pos'])
+                )
+                if dist < 50:  # 같은 큐브로 간주
+                    pixel_points.append(cube['pixel_pos'])
+                    world_points.append(gt_pos[:2])
+                    found = True
+                    break
+            
+            if not found:
+                # 임시: detected 순서대로 매칭
+                if i < len(detected):
+                    pixel_points.append(detected[i]['pixel_pos'])
+                    world_points.append(gt_pos[:2])
+        
+        if len(pixel_points) < 4:
+            print(f"[Vision] Could not match 4 cubes! (matched {len(pixel_points)})")
+            return False
+        
+        # NumPy 배열로 변환
+        src_points = np.array(pixel_points, dtype=np.float32)
+        dst_points = np.array(world_points, dtype=np.float32)
+        
+        print(f"\n[Calibration] Matched points:")
+        for i, (px, py) in enumerate(pixel_points):
+            wx, wy = world_points[i]
+            print(f"  Cube {i}: Pixel({px:.0f}, {py:.0f}) → World({wx:.3f}, {wy:.3f})")
+        
+        # Homography 계산
+        self.homography_matrix, status = cv2.findHomography(src_points, dst_points)
+        
+        if self.homography_matrix is None:
+            print("[Vision] Homography calculation failed!")
+            return False
+        
+        self.calibrated = True
+        
+        print(f"\n[Calibration] Homography matrix:")
+        print(self.homography_matrix)
+        
+        # 검증
+        print(f"\n[Calibration] Verification:")
+        total_error = 0
+        for i, (px, py) in enumerate(pixel_points):
+            transformed = self._pixel_to_world_homography(px, py)
+            gt_x, gt_y = world_points[i]
+            error = np.linalg.norm(transformed[:2] - np.array([gt_x, gt_y]))
+            total_error += error
+            print(f"  Point {i}: Error = {error*1000:.1f} mm")
+        
+        avg_error = total_error / len(pixel_points)
+        print(f"\n[Calibration] Average error: {avg_error*1000:.1f} mm")
+        
+        if avg_error < 0.05:  # 50mm 이하
+            print("[Calibration] ✅ SUCCESS!")
+        else:
+            print("[Calibration] ⚠️  High error, may need adjustment")
+        
+        print("="*60 + "\n")
+        
+        # 재감지로 확인
+        detected_new = self.detect_cubes_from_camera(visualize=True)
+        
+        return True
+    
+    def _match_with_ground_truth(self, detected_cubes):
+        """Ground Truth 매칭"""
         matched_cubes = []
         used_indices = set()
         
@@ -283,7 +361,6 @@ class VisionController:
             best_match = None
             best_distance = float('inf')
             
-            # 4개 큐브와 거리 비교
             for i in range(4):
                 if i in used_indices:
                     continue
@@ -294,7 +371,7 @@ class VisionController:
                 
                 distance = np.linalg.norm(det_cube['position'][:2] - gt_pos[:2])
                 
-                if distance < best_distance and distance < 0.3:  # 30cm 이내
+                if distance < best_distance and distance < 0.4:
                     best_distance = distance
                     best_match = i
             
@@ -307,110 +384,25 @@ class VisionController:
         
         return matched_cubes
     
-    def calibrate_with_ground_truth(self):
-        """
-        Ground Truth를 이용한 자동 보정
-        
-        Returns:
-            bool: 보정 성공 여부
-        """
-        print("\n[Vision] Auto-calibrating with Ground Truth...")
-        
-        # 큐브 감지
-        detected = self.detect_cubes_from_camera(visualize=False)
-        
-        if len(detected) < 2:
-            print("[Vision] Need at least 2 cubes for calibration!")
-            return False
-        
-        # 대응점 수집
-        pixel_points = []
-        world_points = []
-        
-        for cube in detected:
-            if 'gt_position' in cube:
-                pixel_points.append(cube['pixel_pos'])
-                world_points.append(cube['gt_position'][:2])
-        
-        if len(pixel_points) < 2:
-            print("[Vision] Not enough matched cubes!")
-            return False
-        
-        pixel_points = np.array(pixel_points, dtype=np.float32)
-        world_points = np.array(world_points, dtype=np.float32)
-        
-        # 선형 회귀로 변환 파라미터 추정
-        # world_x = a * px + b * py + c
-        # world_y = d * px + e * py + f
-        
-        # 간단한 스케일 추정
-        img_w, img_h = 1024, 768
-        
-        # X축 스케일
-        x_span = world_points[:, 0].max() - world_points[:, 0].min()
-        px_span = pixel_points[:, 1].max() - pixel_points[:, 1].min()
-        if px_span > 0:
-            scale_x = x_span / (px_span / img_h * 2)
-        else:
-            scale_x = self.calibration['scale_x']
-        
-        # Y축 스케일
-        y_span = world_points[:, 1].max() - world_points[:, 1].min()
-        py_span = pixel_points[:, 0].max() - pixel_points[:, 0].min()
-        if py_span > 0:
-            scale_y = y_span / (py_span / img_w * 2)
-        else:
-            scale_y = self.calibration['scale_y']
-        
-        # Offset
-        offset_x = world_points[:, 0].mean()
-        offset_y = world_points[:, 1].mean()
-        
-        # 업데이트
-        self.calibration['scale_x'] = scale_x
-        self.calibration['scale_y'] = scale_y
-        self.calibration['offset_x'] = offset_x
-        self.calibration['offset_y'] = offset_y
-        
-        print(f"[Vision] Calibration updated:")
-        print(f"  scale_x: {scale_x:.3f}")
-        print(f"  scale_y: {scale_y:.3f}")
-        print(f"  offset_x: {offset_x:.3f}")
-        print(f"  offset_y: {offset_y:.3f}")
-        
-        # 재감지로 정확도 확인
-        detected_new = self.detect_cubes_from_camera(visualize=True)
-        
-        if detected_new:
-            errors = [c['detection_error'] for c in detected_new if 'detection_error' in c]
-            if errors:
-                avg_error = np.mean(errors)
-                print(f"[Vision] Average error after calibration: {avg_error*1000:.1f} mm")
-        
-        return True
-    
     def auto_grasp(self, cube_index=None):
-        """
-        Vision 기반 자동 grasp
+        """Vision 기반 자동 grasp"""
         
-        Args:
-            cube_index (int): 특정 큐브 선택
+        if not self.calibrated:
+            print("[Vision] ⚠️  Camera not calibrated! Run calibrate_homography() first")
+            return False
         
-        Returns:
-            bool: 성공 여부
-        """
         start_time = time.time()
         
         print("\n[Phase 3: Vision] Starting vision-based grasp...")
         
-        # 1. 카메라로 큐브 감지
+        # 큐브 감지
         detected = self.detect_cubes_from_camera(visualize=True)
         
         if not detected:
             print("[Vision] No cubes detected!")
             return False
         
-        # 2. 큐브 선택
+        # 큐브 선택
         if cube_index is not None:
             target_cube = None
             for cube in detected:
@@ -422,7 +414,6 @@ class VisionController:
                 print(f"[Vision] Cube_{cube_index} not detected!")
                 return False
         else:
-            # 가장 가까운 큐브
             ee_pos, _ = self.franka.end_effector.get_world_pose()
             target_cube = min(detected, 
                             key=lambda c: np.linalg.norm(c['position'][:2] - ee_pos[:2]))
@@ -431,34 +422,22 @@ class VisionController:
         self.current_cube_index = target_cube['index']
         
         print(f"[Vision] Selected: {target_cube['color']} (Cube_{self.current_cube_index})")
-        print(f"[Vision] Vision position: ({cube_pos[0]:.3f}, {cube_pos[1]:.3f}, {cube_pos[2]:.3f})")
         
-        # Ground truth와 비교
         if 'detection_error' in target_cube:
             self.performance['detection_errors'].append(target_cube['detection_error'])
             print(f"[Vision] Detection error: {target_cube['detection_error']*1000:.2f} mm")
         
-        # 3. 그리퍼 열기
+        # Grasp 실행
         print("[Vision] Opening gripper...")
         for _ in range(30):
             self.franka.gripper.open()
             self.world.step(render=True)
         self.gripper_closed = False
         
-        # 4. Joint 제어로 grasp
         angle = np.arctan2(cube_pos[1], cube_pos[0])
         
-        # Pre-grasp
         pre_grasp = np.array([
-            angle,
-            -0.5,
-            0.0,
-            -2.0,
-            0.0,
-            1.8,
-            0.8,
-            0.04,
-            0.04
+            angle, -0.5, 0.0, -2.0, 0.0, 1.8, 0.8, 0.04, 0.04
         ])
         
         print("[Vision] Moving to pre-grasp...")
@@ -471,7 +450,6 @@ class VisionController:
                 pass
             self.world.step(render=True)
         
-        # Approach
         grasp_pose = pre_grasp.copy()
         grasp_pose[3] -= 0.5
         
@@ -485,7 +463,6 @@ class VisionController:
                 pass
             self.world.step(render=True)
         
-        # Close gripper
         print("[Vision] Closing gripper...")
         for _ in range(60):
             self.franka.gripper.close()
@@ -495,11 +472,9 @@ class VisionController:
         for _ in range(20):
             self.world.step(render=True)
         
-        # Attach
         attach_cube_to_ee(self.current_cube_index)
         self.cube_attached = True
         
-        # Lift
         lift_pose = grasp_pose.copy()
         lift_pose[1] += 0.3
         lift_pose[3] += 0.6
@@ -517,8 +492,7 @@ class VisionController:
         elapsed = time.time() - start_time
         self.performance['grasp_times'].append(elapsed)
         
-        print(f"\n[Phase 3] ✓ Vision Grasp Complete!")
-        print(f"  Time: {elapsed:.2f}s")
+        print(f"\n[Phase 3] ✓ Vision Grasp Complete! (Time: {elapsed:.2f}s)")
         
         return True
     
@@ -526,7 +500,7 @@ class VisionController:
         """큐브 놓기"""
         start_time = time.time()
         
-        if not self.cube_attached or self.current_cube_index is None:
+        if not self.cube_attached:
             print("[Error] No cube attached!")
             return False
         
@@ -535,15 +509,7 @@ class VisionController:
         angle = np.arctan2(target_position[1], target_position[0])
         
         hover_pose = np.array([
-            angle,
-            -0.5,
-            0.0,
-            -2.0,
-            0.0,
-            1.8,
-            0.8,
-            0.01,
-            0.01
+            angle, -0.5, 0.0, -2.0, 0.0, 1.8, 0.8, 0.01, 0.01
         ])
         
         for _ in range(200):
