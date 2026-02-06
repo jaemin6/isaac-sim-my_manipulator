@@ -41,10 +41,8 @@ class UnifiedController:
         self.phase3 = VisionController(franka, world, camera)
         # Phase 4는 나중에 추가
 
-        # Phase 3 초기 보정 추가
-        print("\n[Setup] Running camera calibration for Phase 3...")
-        if not self.phase3.calibrate_homography():
-            print("[Warning] Phase 3 calibration failed. Vision may be inaccurate")
+        # Phase 3 보정 플래그 추가
+        self.phase3.calibrated = False
 
         # 현재 모드
         self.current_phase = 1
@@ -230,6 +228,14 @@ class UnifiedController:
         elif self.current_phase == 2:
             self.phase2.auto_grasp()
         elif self.current_phase == 3:
+            if not self.phase3_calibrated:
+                print("\n[Setup] Running camera calibration for Phase 3...")
+                if self.phase3.calibrate_homography():
+                    self.phase3_calibrated = True
+                    print("[Setup] ✓ Calibration complete!\n")
+                else:
+                    print("[Warning] Calibration failed. Trying anyway...\n")
+                    
             self.phase3.auto_grasp()
         elif self.current_phase == 4:
             print("[Phase 4] RL - 준비중")

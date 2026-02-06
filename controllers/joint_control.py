@@ -81,6 +81,17 @@ class JointController:
             print(f"[Joint] Wrist: {self.target_joints[5]:.2f}")
         elif key == 'g':
             self.toggle_gripper()
+
+        from omni.isaac.core.utils.types import ArticulationAction
+        try:
+            self.controller.apply_action(
+                ArticulationAction(joint_positions=self.target_joints)
+            )
+        except:
+            pass
+
+        for _ in range(5):
+            self.world.step(render=True)
     
     def toggle_gripper(self):
         """그리퍼 열고 닫기"""

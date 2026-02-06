@@ -121,21 +121,21 @@ class VisionController:
         color_ranges = {
             'red': {
                 'hsv_ranges': [
-                    ([0, 100, 100], [10, 255, 255]),
-                    ([170, 100, 100], [180, 255, 255])
+                    ([0, 80, 80], [10, 255, 255]),      # 더 넓게
+                    ([170, 80, 80], [180, 255, 255])
                 ],
                 'index': 0
             },
             'green': {
-                'hsv_ranges': [([50, 100, 100], [80, 255, 255])],
+                'hsv_ranges': [([35, 60, 60], [85, 255, 255])],  # 35-85로 더 넓게!
                 'index': 1
             },
             'blue': {
-                'hsv_ranges': [([100, 100, 100], [130, 255, 255])],
+                'hsv_ranges': [([95, 80, 80], [130, 255, 255])],  # 더 넓게
                 'index': 2
             },
             'yellow': {
-                'hsv_ranges': [([20, 100, 100], [35, 255, 255])],
+                'hsv_ranges': [([18, 80, 80], [35, 255, 255])],  # 더 넓게
                 'index': 3
             }
         }
@@ -161,7 +161,7 @@ class VisionController:
             
             for cnt in contours:
                 area = cv2.contourArea(cnt)
-                if area > 300:  # 최소 크기
+                if area > 200:  # 300 → 200 (더 민감하게)
                     M = cv2.moments(cnt)
                     if M["m00"] != 0:
                         cx = int(M["m10"] / M["m00"])
