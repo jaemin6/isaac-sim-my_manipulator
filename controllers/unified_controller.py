@@ -42,7 +42,7 @@ class UnifiedController:
         # Phase 4는 나중에 추가
 
         # Phase 3 보정 플래그 추가
-        self.phase3.calibrated = False
+        self.phase3_calibrated = False
 
         # 현재 모드
         self.current_phase = 1
@@ -229,13 +229,18 @@ class UnifiedController:
             self.phase2.auto_grasp()
         elif self.current_phase == 3:
             if not self.phase3_calibrated:
-                print("\n[Setup] Running camera calibration for Phase 3...")
+                print("\n" + "="*60)
+                print("PHASE 3: INITIAL CALIBRATION")
+                print("="*60)
+                print("[Setup] Running camera calibration...")
                 if self.phase3.calibrate_homography():
                     self.phase3_calibrated = True
-                    print("[Setup] ✓ Calibration complete!\n")
+                    print("[Setup] ✓ Calibration complete!")
+                    print("="*60 + "\n")
                 else:
-                    print("[Warning] Calibration failed. Trying anyway...\n")
-                    
+                    print("[Warning] Calibration failed. Trying anyway...")
+                    print("="*60 + "\n")
+
             self.phase3.auto_grasp()
         elif self.current_phase == 4:
             print("[Phase 4] RL - 준비중")
