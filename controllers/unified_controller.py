@@ -40,7 +40,12 @@ class UnifiedController:
         self.phase2 = IKController(franka, world)
         self.phase3 = VisionController(franka, world, camera)
         # Phase 4는 나중에 추가
-        
+
+        # Phase 3 초기 보정 추가
+        print("\n[Setup] Running camera calibration for Phase 3...")
+        if not self.phase3.calibrate_homography():
+            print("[Warning] Phase 3 calibration failed. Vision may be inaccurate")
+
         # 현재 모드
         self.current_phase = 1
         
