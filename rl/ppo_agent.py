@@ -2,179 +2,20 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.distributions import Normal
-from typing import Tuple, List, Dict
+from typing import Tuple, List, Dict, Optional
 import os
 
-
-class ActorCritic(nn.Module):
-    """
-    Actor-Critic 네트워크
-    Actor: 정책 네트워크 (행동 선택)
-    Critic: 가치 네트워크 (상태 가치 평가)
-    """
-    
-    def __init__(
-        self,
-        input_dim: int,
-        action_dim: int,
-        hidden_dims: List[int] = [256, 128, 64],
-        activation: str = 'relu'
-    ):
-        """
-        Args:
-            input_dim: 입력 차원 (flatten된 observation 크기)
-            action_dim: 행동 차원
-            hidden_dims: 은닉층 크기 리스트
-            activation: 활성화 함수
-        """
-        super(ActorCritic, self).__init__()
-        
-        self.input_dim = input_dim
-        self.action_dim = action_dim
-        
-        # 활성화 함수 선택
-        if activation == 'relu':
-            self.activation = nn.ReLU()
-        elif activation == 'tanh':
-            self.activation = nn.Tanh()
-        elif activation == 'elu':
-            self.activation = nn.ELU()
-        else:
-            self.activation = nn.ReLU()
-        
-        # Shared feature extractor (LSTM for temporal data)
-        self.feature_extractor = nn.Sequential(
-            nn.Linear(input_dim, hidden_dims[0]),
-            self.activation,
-            nn.Dropout(0.2)
-        )
-        
-        # Actor network (policy)
-        actor_layers = []
-        prev_dim = hidden_dims[0]
-        for hidden_dim in hidden_dims[1:]:
-            actor_layers.extend([
-                nn.Linear(prev_dim, hidden_dim),
-                self.activation,
-                nn.Dropout(0.2)
-            ])
-            prev_dim = hidden_dim
-        
-        self.actor_backbone = nn.Sequential(*actor_layers)
-        
-        # Actor head: mean and log_std for Gaussian policy
-        self.actor_mean = nn.Linear(prev_dim, action_dim)
-        self.actor_log_std = nn.Linear(prev_dim, action_dim)
-        
-        # Critic network (value function)
-        critic_layers = []
-        prev_dim = hidden_dims[0]
-        for hidden_dim in hidden_dims[1:]:
-            critic_layers.extend([
-                nn.Linear(prev_dim, hidden_dim),
-                self.activation,
-                nn.Dropout(0.2)
-            ])
-            prev_dim = hidden_dim
-        
-        self.critic_backbone = nn.Sequential(*critic_layers)
-        self.critic_head = nn.Linear(prev_dim, 1)
-        
-        # Initialize weights
-        self._initialize_weights()
-    
-    def _initialize_weights(self):
-        """가중치 초기화"""
-        for m in self.modules():
-            if isinstance(m, nn.Linear):
-                nn.init.orthogonal_(m.weight, gain=np.sqrt(2))
-                nn.init.constant_(m.bias, 0.0)
-    
-    def forward(self, state: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """
-        Forward pass
-        
-        Args:
-            state: (batch_size, input_dim)
-        
-        Returns:
-            action_mean: (batch_size, action_dim)
-            action_log_std: (batch_size, action_dim)
-            value: (batch_size, 1)
-        """
-        # Shared features
-        features = self.feature_extractor(state)
-        
-        # Actor
-        actor_features = self.actor_backbone(features)
-        action_mean = torch.tanh(self.actor_mean(actor_features))  # [-1, 1] 범위로 제한
-        action_log_std = self.actor_log_std(actor_features)
-        action_log_std = torch.clamp(action_log_std, -20, 2)  # 안정성을 위해 clamp
-        
-        # Critic
-        critic_features = self.critic_backbone(features)
-        value = self.critic_head(critic_features)
-        
-        return action_mean, action_log_std, value
-    
-    def get_action(self, state: torch.Tensor, deterministic: bool = False) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """
-        행동 샘플링
-        
-        Args:
-            state: (batch_size, input_dim)
-            deterministic: True면 평균값 사용, False면 샘플링
-        
-        Returns:
-            action: (batch_size, action_dim)
-            log_prob: (batch_size,)
-            value: (batch_size, 1)
-        """
-        action_mean, action_log_std, value = self.forward(state)
-        action_std = torch.exp(action_log_std)
-        
-        if deterministic:
-            action = action_mean
-            # 결정적 행동의 log_prob은 의미 없지만 형식상 계산
-            dist = Normal(action_mean, action_std)
-            log_prob = dist.log_prob(action).sum(dim=-1)
-        else:
-            dist = Normal(action_mean, action_std)
-            action = dist.sample()
-            log_prob = dist.log_prob(action).sum(dim=-1)
-        
-        # Action을 [-1, 1] 범위로 클램핑
-        action = torch.clamp(action, -1.0, 1.0)
-        
-        return action, log_prob, value
-    
-    def evaluate_actions(self, state: torch.Tensor, action: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """
-        행동 평가 (학습 시 사용)
-        
-        Args:
-            state: (batch_size, input_dim)
-            action: (batch_size, action_dim)
-        
-        Returns:
-            log_prob: (batch_size,)
-            entropy: (batch_size,)
-            value: (batch_size, 1)
-        """
-        action_mean, action_log_std, value = self.forward(state)
-        action_std = torch.exp(action_log_std)
-        
-        dist = Normal(action_mean, action_std)
-        log_prob = dist.log_prob(action).sum(dim=-1)
-        entropy = dist.entropy().sum(dim=-1)
-        
-        return log_prob, entropy, value
+from .networks import ActorCritic, RecurrentActorCritic
 
 
 class PPOAgent:
     """
     Proximal Policy Optimization (PPO) 에이전트
+    
+    PPO는 다음과 같은 특징을 가진 강화학습 알고리즘입니다:
+    - On-policy: 현재 정책으로 수집한 데이터로 학습
+    - Clipped surrogate objective: 정책 업데이트를 안정적으로 제한
+    - Actor-Critic: 정책과 가치 함수를 동시에 학습
     """
     
     def __init__(
@@ -189,21 +30,23 @@ class PPOAgent:
         value_loss_coef: float = 0.5,
         entropy_coef: float = 0.01,
         max_grad_norm: float = 0.5,
+        use_recurrent: bool = False,
         device: str = 'cuda' if torch.cuda.is_available() else 'cpu'
     ):
         """
         Args:
-            state_dim: 상태 차원
+            state_dim: 상태 차원 (flatten된 observation 크기)
             action_dim: 행동 차원
-            hidden_dims: 은닉층 크기
-            lr: 학습률
-            gamma: 할인율
-            gae_lambda: GAE lambda
-            clip_epsilon: PPO clipping 파라미터
+            hidden_dims: 은닉층 크기 리스트
+            lr: 학습률 (learning rate)
+            gamma: 할인율 (discount factor)
+            gae_lambda: GAE lambda 파라미터
+            clip_epsilon: PPO clipping 파라미터 (epsilon)
             value_loss_coef: 가치 손실 계수
-            entropy_coef: 엔트로피 계수
-            max_grad_norm: 그래디언트 클리핑 최대값
-            device: 디바이스
+            entropy_coef: 엔트로피 보너스 계수
+            max_grad_norm: 그래디언트 클리핑 최대 norm
+            use_recurrent: LSTM 네트워크 사용 여부
+            device: 학습 디바이스 ('cuda' or 'cpu')
         """
         self.device = device
         self.gamma = gamma
@@ -212,16 +55,28 @@ class PPOAgent:
         self.value_loss_coef = value_loss_coef
         self.entropy_coef = entropy_coef
         self.max_grad_norm = max_grad_norm
+        self.use_recurrent = use_recurrent
         
-        # Actor-Critic 네트워크
-        self.actor_critic = ActorCritic(
-            input_dim=state_dim,
-            action_dim=action_dim,
-            hidden_dims=hidden_dims
-        ).to(device)
+        # Actor-Critic 네트워크 선택
+        if use_recurrent:
+            self.actor_critic = RecurrentActorCritic(
+                input_dim=state_dim,
+                action_dim=action_dim,
+                hidden_dim=hidden_dims[0] if hidden_dims else 128,
+                num_layers=2
+            ).to(device)
+        else:
+            self.actor_critic = ActorCritic(
+                input_dim=state_dim,
+                action_dim=action_dim,
+                hidden_dims=hidden_dims
+            ).to(device)
         
         # Optimizer
         self.optimizer = optim.Adam(self.actor_critic.parameters(), lr=lr, eps=1e-5)
+        
+        # 학습 스케줄러 (optional)
+        self.scheduler = optim.lr_scheduler.StepLR(self.optimizer, step_size=1000, gamma=0.95)
         
         # 학습 통계
         self.training_stats = {
@@ -230,28 +85,53 @@ class PPOAgent:
             'entropy': [],
             'total_loss': [],
             'approx_kl': [],
-            'clip_fraction': []
+            'clip_fraction': [],
+            'explained_variance': []
+        }
+        
+        # 에피소드 통계
+        self.episode_stats = {
+            'rewards': [],
+            'lengths': [],
+            'profits': []
         }
     
-    def select_action(self, state: np.ndarray, deterministic: bool = False) -> Tuple[np.ndarray, float, float]:
+    def select_action(
+        self,
+        state: np.ndarray,
+        deterministic: bool = False
+    ) -> Tuple[np.ndarray, float, float]:
         """
         행동 선택
         
         Args:
-            state: 상태 (observation)
-            deterministic: 결정적 행동 선택 여부
+            state: 상태 (observation) - shape: (window_size, n_features) or flattened
+            deterministic: True면 평균값 사용, False면 확률적 샘플링
         
         Returns:
-            action: 선택된 행동
-            log_prob: 로그 확률
-            value: 상태 가치
+            action: 선택된 행동 - shape: (action_dim,)
+            log_prob: 행동의 로그 확률
+            value: 상태의 가치 추정값
         """
-        # State를 flatten
-        state_flat = state.flatten()
+        # State를 flatten (이미 flatten되어 있으면 그대로)
+        if state.ndim > 1:
+            state_flat = state.flatten()
+        else:
+            state_flat = state
+        
         state_tensor = torch.FloatTensor(state_flat).unsqueeze(0).to(self.device)
         
         with torch.no_grad():
-            action, log_prob, value = self.actor_critic.get_action(state_tensor, deterministic)
+            if self.use_recurrent:
+                action, log_prob, value, _ = self.actor_critic.get_action(
+                    state_tensor,
+                    deterministic=deterministic
+                )
+            else:
+                action, log_prob, value = self.actor_critic.get_action(
+                    state_tensor,
+                    deterministic=deterministic
+                )
         
         return action.cpu().numpy()[0], log_prob.cpu().item(), value.cpu().item()
     
@@ -261,39 +141,45 @@ class PPOAgent:
         values: List[float],
         dones: List[bool],
         next_value: float
-    ) -> Tuple[List[float], List[float]]:
+    ) -> Tuple[np.ndarray, np.ndarray]:
         """
         Generalized Advantage Estimation (GAE) 계산
         
+        GAE는 advantage 함수의 분산을 줄이기 위한 기법입니다.
+        A_t = δ_t + (γλ)δ_{t+1} + (γλ)^2 δ_{t+2} + ...
+        where δ_t = r_t + γV(s_{t+1}) - V(s_t)
+        
         Args:
             rewards: 보상 리스트
-            values: 가치 리스트
-            dones: 종료 플래그 리스트
-            next_value: 다음 상태 가치
+            values: 가치 추정값 리스트
+            dones: 에피소드 종료 플래그 리스트
+            next_value: 다음 상태의 가치
         
         Returns:
-            returns: 수익 리스트
-            advantages: 이점 리스트
+            returns: 수익 (return) 배열 - shape: (T,)
+            advantages: 이점 (advantage) 배열 - shape: (T,)
         """
         advantages = []
         gae = 0
         
-        # 역순으로 계산
+        # 역순으로 계산 (t = T-1, T-2, ..., 0)
         for t in reversed(range(len(rewards))):
             if t == len(rewards) - 1:
                 next_value_t = next_value
             else:
                 next_value_t = values[t + 1]
             
-            # TD error
+            # TD error: δ_t = r_t + γV(s_{t+1}) - V(s_t)
             delta = rewards[t] + self.gamma * next_value_t * (1 - dones[t]) - values[t]
             
-            # GAE
+            # GAE: A_t = δ_t + (γλ)(1-done)A_{t+1}
             gae = delta + self.gamma * self.gae_lambda * (1 - dones[t]) * gae
             advantages.insert(0, gae)
         
         # Returns = advantages + values
-        returns = [adv + val for adv, val in zip(advantages, values)]
+        advantages = np.array(advantages, dtype=np.float32)
+        values_array = np.array(values, dtype=np.float32)
+        returns = advantages + values_array
         
         return returns, advantages
     
@@ -308,19 +194,19 @@ class PPOAgent:
         batch_size: int = 64
     ) -> Dict[str, float]:
         """
-        PPO 업데이트
+        PPO 업데이트 (여러 에폭 동안 미니배치 학습)
         
         Args:
-            states: 상태 배열
-            actions: 행동 배열
-            old_log_probs: 이전 로그 확률
-            returns: 수익 배열
-            advantages: 이점 배열
-            epochs: 에폭 수
-            batch_size: 배치 크기
+            states: 상태 배열 - shape: (T, state_dim)
+            actions: 행동 배열 - shape: (T, action_dim)
+            old_log_probs: 이전 정책의 로그 확률 - shape: (T,)
+            returns: 수익 배열 - shape: (T,)
+            advantages: 이점 배열 - shape: (T,)
+            epochs: 학습 에폭 수
+            batch_size: 미니배치 크기
         
         Returns:
-            학습 통계
+            학습 통계 딕셔너리
         """
         # Numpy to Tensor
         states = torch.FloatTensor(states).to(self.device)
@@ -329,12 +215,12 @@ class PPOAgent:
         returns = torch.FloatTensor(returns).to(self.device)
         advantages = torch.FloatTensor(advantages).to(self.device)
         
-        # Normalize advantages
+        # Normalize advantages (중요!)
         advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
         
         dataset_size = states.size(0)
         
-        # 통계 저장
+        # 통계 저장용 리스트
         epoch_policy_losses = []
         epoch_value_losses = []
         epoch_entropies = []
@@ -342,10 +228,12 @@ class PPOAgent:
         epoch_approx_kls = []
         epoch_clip_fractions = []
         
+        # 여러 에폭 동안 학습
         for epoch in range(epochs):
-            # Mini-batch 학습
+            # 데이터 셔플
             indices = np.random.permutation(dataset_size)
             
+            # 미니배치 학습
             for start_idx in range(0, dataset_size, batch_size):
                 end_idx = min(start_idx + batch_size, dataset_size)
                 batch_indices = indices[start_idx:end_idx]
@@ -356,21 +244,26 @@ class PPOAgent:
                 batch_returns = returns[batch_indices]
                 batch_advantages = advantages[batch_indices]
                 
-                # Evaluate actions
+                # 현재 정책으로 행동 평가
                 log_probs, entropy, values = self.actor_critic.evaluate_actions(
                     batch_states, batch_actions
                 )
                 
-                # Policy loss (PPO clipping)
+                # Policy loss (PPO clipped objective)
+                # L^CLIP = E[min(r_t(θ)Â_t, clip(r_t(θ), 1-ε, 1+ε)Â_t)]
                 ratio = torch.exp(log_probs - batch_old_log_probs)
                 surr1 = ratio * batch_advantages
-                surr2 = torch.clamp(ratio, 1.0 - self.clip_epsilon, 1.0 + self.clip_epsilon) * batch_advantages
+                surr2 = torch.clamp(
+                    ratio,
+                    1.0 - self.clip_epsilon,
+                    1.0 + self.clip_epsilon
+                ) * batch_advantages
                 policy_loss = -torch.min(surr1, surr2).mean()
                 
-                # Value loss
+                # Value loss (MSE)
                 value_loss = nn.MSELoss()(values.squeeze(), batch_returns)
                 
-                # Entropy bonus
+                # Entropy bonus (탐험 장려)
                 entropy_loss = -entropy.mean()
                 
                 # Total loss
@@ -386,9 +279,12 @@ class PPOAgent:
                 nn.utils.clip_grad_norm_(self.actor_critic.parameters(), self.max_grad_norm)
                 self.optimizer.step()
                 
-                # 통계
+                # 통계 계산
                 with torch.no_grad():
+                    # KL divergence 근사
                     approx_kl = (batch_old_log_probs - log_probs).mean().item()
+                    
+                    # Clipping fraction (얼마나 많은 샘플이 clipping되었는지)
                     clip_fraction = ((ratio - 1.0).abs() > self.clip_epsilon).float().mean().item()
                 
                 epoch_policy_losses.append(policy_loss.item())
@@ -398,6 +294,16 @@ class PPOAgent:
                 epoch_approx_kls.append(approx_kl)
                 epoch_clip_fractions.append(clip_fraction)
         
+        # Learning rate scheduler step
+        self.scheduler.step()
+        
+        # Explained variance 계산
+        with torch.no_grad():
+            _, _, all_values = self.actor_critic.evaluate_actions(states, actions)
+            all_values = all_values.squeeze()
+            explained_var = 1 - torch.var(returns - all_values) / (torch.var(returns) + 1e-8)
+            explained_var = explained_var.item()
+        
         # 평균 통계
         stats = {
             'policy_loss': np.mean(epoch_policy_losses),
@@ -405,7 +311,8 @@ class PPOAgent:
             'entropy': np.mean(epoch_entropies),
             'total_loss': np.mean(epoch_total_losses),
             'approx_kl': np.mean(epoch_approx_kls),
-            'clip_fraction': np.mean(epoch_clip_fractions)
+            'clip_fraction': np.mean(epoch_clip_fractions),
+            'explained_variance': explained_var
         }
         
         # 통계 저장
@@ -415,99 +322,63 @@ class PPOAgent:
         return stats
     
     def save(self, filepath: str):
-        """모델 저장"""
+        """
+        모델 저장
+        
+        Args:
+            filepath: 저장 경로
+        """
         os.makedirs(os.path.dirname(filepath), exist_ok=True)
         torch.save({
             'actor_critic_state_dict': self.actor_critic.state_dict(),
             'optimizer_state_dict': self.optimizer.state_dict(),
-            'training_stats': self.training_stats
+            'scheduler_state_dict': self.scheduler.state_dict(),
+            'training_stats': self.training_stats,
+            'episode_stats': self.episode_stats,
+            'config': {
+                'gamma': self.gamma,
+                'gae_lambda': self.gae_lambda,
+                'clip_epsilon': self.clip_epsilon,
+                'value_loss_coef': self.value_loss_coef,
+                'entropy_coef': self.entropy_coef,
+                'max_grad_norm': self.max_grad_norm,
+                'use_recurrent': self.use_recurrent
+            }
         }, filepath)
-        print(f"Model saved to {filepath}")
+        print(f"✅ Model saved to {filepath}")
     
     def load(self, filepath: str):
-        """모델 로드"""
+        """
+        모델 로드
+        
+        Args:
+            filepath: 로드 경로
+        """
         checkpoint = torch.load(filepath, map_location=self.device)
         self.actor_critic.load_state_dict(checkpoint['actor_critic_state_dict'])
         self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-        self.training_stats = checkpoint['training_stats']
-        print(f"Model loaded from {filepath}")
-
-
-class RecurrentActorCritic(nn.Module):
-    """
-    LSTM 기반 Recurrent Actor-Critic 네트워크
-    시계열 데이터의 temporal dependency를 더 잘 포착
-    """
+        
+        if 'scheduler_state_dict' in checkpoint:
+            self.scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+        
+        if 'training_stats' in checkpoint:
+            self.training_stats = checkpoint['training_stats']
+        
+        if 'episode_stats' in checkpoint:
+            self.episode_stats = checkpoint['episode_stats']
+        
+        print(f"✅ Model loaded from {filepath}")
     
-    def __init__(
-        self,
-        input_dim: int,
-        action_dim: int,
-        hidden_dim: int = 128,
-        num_layers: int = 2
-    ):
-        super(RecurrentActorCritic, self).__init__()
-        
-        self.hidden_dim = hidden_dim
-        self.num_layers = num_layers
-        
-        # LSTM for temporal features
-        self.lstm = nn.LSTM(
-            input_size=input_dim,
-            hidden_size=hidden_dim,
-            num_layers=num_layers,
-            batch_first=True,
-            dropout=0.2 if num_layers > 1 else 0
-        )
-        
-        # Actor head
-        self.actor_mean = nn.Linear(hidden_dim, action_dim)
-        self.actor_log_std = nn.Linear(hidden_dim, action_dim)
-        
-        # Critic head
-        self.critic = nn.Linear(hidden_dim, 1)
-        
-        self._initialize_weights()
+    def get_training_stats(self) -> Dict[str, List[float]]:
+        """학습 통계 반환"""
+        return self.training_stats
     
-    def _initialize_weights(self):
-        """가중치 초기화"""
-        for name, param in self.lstm.named_parameters():
-            if 'weight' in name:
-                nn.init.orthogonal_(param)
-            elif 'bias' in name:
-                nn.init.constant_(param, 0.0)
-        
-        nn.init.orthogonal_(self.actor_mean.weight, gain=0.01)
-        nn.init.orthogonal_(self.actor_log_std.weight, gain=0.01)
-        nn.init.orthogonal_(self.critic.weight, gain=1.0)
+    def get_episode_stats(self) -> Dict[str, List[float]]:
+        """에피소드 통계 반환"""
+        return self.episode_stats
     
-    def forward(self, state: torch.Tensor, hidden_state=None):
-        """
-        Forward pass with LSTM
-        
-        Args:
-            state: (batch_size, seq_len, input_dim) or (batch_size, input_dim)
-            hidden_state: LSTM hidden state
-        
-        Returns:
-            action_mean, action_log_std, value, new_hidden_state
-        """
-        # state가 2D면 3D로 변환
-        if state.dim() == 2:
-            state = state.unsqueeze(1)
-        
-        # LSTM forward
-        lstm_out, new_hidden_state = self.lstm(state, hidden_state)
-        
-        # 마지막 타임스텝의 출력 사용
-        features = lstm_out[:, -1, :]
-        
-        # Actor
-        action_mean = torch.tanh(self.actor_mean(features))
-        action_log_std = self.actor_log_std(features)
-        action_log_std = torch.clamp(action_log_std, -20, 2)
-        
-        # Critic
-        value = self.critic(features)
-        
-        return action_mean, action_log_std, value, new_hidden_state
+    def add_episode_stats(self, reward: float, length: int, profit: float):
+        """에피소드 통계 추가"""
+        self.episode_stats['rewards'].append(reward)
+        self.episode_stats['lengths'].append(length)
+        self.episode_stats['profits'].append(profit)
