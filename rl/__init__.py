@@ -8,6 +8,7 @@ from .environment import TradingEnvironment, MultiAssetTradingEnvironment
 from .networks import ActorCritic, RecurrentActorCritic, CNNActorCritic
 from .ppo_agent import PPOAgent
 from .replay_buffer import RolloutBuffer, EpisodeBuffer, PrioritizedReplayBuffer
+from .trainer import RLTrainer, create_trainer_from_data
 from .config import (
     RLConfig,
     EnvironmentConfig,
@@ -39,6 +40,10 @@ __all__ = [
     'RolloutBuffer',
     'EpisodeBuffer',
     'PrioritizedReplayBuffer',
+    
+    # Trainer
+    'RLTrainer',
+    'create_trainer_from_data',
     
     # Config
     'RLConfig',
