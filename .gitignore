@@ -10,3 +10,27 @@ cache/
 
 # Isaac Sim generated
 .omniverse/
+
+
+# --- Data & Outputs ---
+data/raw/
+data/processed/*.csv
+data/processed/*.json
+
+# --- RL Training Results ---
+checkpoints/
+logs/
+results/
+backtest_results.png
+training_progress.png
+
+# --- System & Cache ---
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+.DS_Store
+
+# --- Environment ---
+.venv/
+venv/
+env/
