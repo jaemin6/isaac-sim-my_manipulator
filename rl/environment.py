@@ -9,6 +9,7 @@ from gym import spaces
 class TradingEnvironment(gym.Env):
     """
     암호화폐 트레이딩을 위한 강화학습 환경
+    OpenAI Gym 인터페이스 구현
     """
     
     def __init__(
@@ -117,7 +118,7 @@ class TradingEnvironment(gym.Env):
     
     def _execute_action(self, action: float, current_price: float) -> float:
         """
-        행동 실행 및 보상 계산
+        행동 실행 및 보상 계산 (재설계된 보상 함수)
         
         Args:
             action: 행동 값 [-1, 1]
@@ -131,12 +132,16 @@ class TradingEnvironment(gym.Env):
         position_change = target_position - self.position
         
         reward = 0.0
+        prev_position = self.position
         
         # 포지션 변경이 있는 경우
         if abs(position_change) > 0.01:
             # 거래 실행
             trade_amount = abs(position_change) * self.balance
             fee = trade_amount * self.transaction_fee
+            
+            # 거래 자체에 작은 긍정적 보상 (탐험 장려)
+            reward += 0.5
             
             # 포지션 종료 시 손익 계산
             if self.position != 0:
@@ -148,7 +153,10 @@ class TradingEnvironment(gym.Env):
                 profit -= fee
                 self.balance += profit
                 self.total_profit += profit
-                reward = profit / self.initial_balance * 100  # 수익률을 보상으로
+                
+                # 수익률을 보상으로 (스케일 증가)
+                profit_ratio = profit / self.initial_balance
+                reward += profit_ratio * 1000  # 100 → 1000 (10배 증가)
                 
                 # 거래 기록
                 self.trade_history.append({
@@ -174,21 +182,35 @@ class TradingEnvironment(gym.Env):
                     'entry_price': self.entry_price
                 })
         
-        # 보유 중인 포지션의 미실현 손익
+        # 보유 중인 포지션의 미실현 손익 (보상 스케일 대폭 증가)
         if self.position != 0:
             if self.position > 0:
-                unrealized_profit = (current_price - self.entry_price) * abs(self.position) * self.balance
+                price_change = (current_price - self.entry_price) / self.entry_price
+                unrealized_pnl = price_change * abs(self.position) * self.initial_balance
             else:
-                unrealized_profit = (self.entry_price - current_price) * abs(self.position) * self.balance
+                price_change = (self.entry_price - current_price) / self.entry_price
+                unrealized_pnl = price_change * abs(self.position) * self.initial_balance
             
-            # 미실현 손익을 작은 보상으로 추가
-            reward += unrealized_profit / self.initial_balance * 10
+            # 미실현 손익을 큰 보상으로 (10 → 100, 10배 증가)
+            reward += unrealized_pnl / self.initial_balance * 100
+            
+            # 포지션 방향이 맞으면 추가 보상
+            if unrealized_pnl > 0:
+                reward += 1.0  # 올바른 방향 보너스
+        else:
+            # Hold 패널티 (아무것도 안 하는 걸 막기)
+            reward -= 0.5
         
-        # 과도한 거래 페널티
-        if len(self.trade_history) > 0:
-            recent_trades = sum(1 for t in self.trade_history[-10:] if t['type'] == 'open')
-            if recent_trades > 5:
-                reward -= 0.1 * recent_trades
+        # 잔액이 크게 줄어들면 페널티
+        balance_ratio = self.balance / self.initial_balance
+        if balance_ratio < 0.5:  # 50% 이상 손실
+            reward -= 10.0
+        elif balance_ratio < 0.8:  # 20% 이상 손실
+            reward -= 2.0
+        
+        # 총 수익이 증가하면 보상
+        if self.total_profit > 0:
+            reward += self.total_profit / self.initial_balance * 10
         
         return reward
     
@@ -262,6 +284,7 @@ class TradingEnvironment(gym.Env):
 class MultiAssetTradingEnvironment(TradingEnvironment):
     """
     다중 자산 트레이딩 환경
+    여러 암호화폐를 동시에 거래할 수 있는 환경
     """
     
     def __init__(
