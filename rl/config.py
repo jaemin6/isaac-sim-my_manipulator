@@ -92,7 +92,7 @@ class TrainingConfig:
     
     # 조기 종료
     early_stopping: bool = True
-    patience: int = 100  # 성능 개선이 없을 때 기다리는 에피소드 수
+    patience: int = 300  # 성능 개선이 없을 때 기다리는 에피소드 수
     min_improvement: float = 0.01  # 최소 개선폭
     
     # 체크포인트
@@ -154,9 +154,9 @@ class RLConfig:
     def conservative(cls):
         """보수적인 설정 (안정적인 학습)"""
         config = cls()
-        config.ppo.learning_rate = 1e-4
-        config.ppo.clip_epsilon = 0.1
-        config.ppo.entropy_coef = 0.001
+        config.ppo.learning_rate = 3e-4
+        config.ppo.clip_epsilon = 0.2
+        config.ppo.entropy_coef = 0.01
         config.env.max_position = 0.5
         return config
     
