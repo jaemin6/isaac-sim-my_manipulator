@@ -261,8 +261,9 @@ class PPOAgent:
                 ) * batch_advantages
                 policy_loss = -torch.min(surr1, surr2).mean()
                 
-                # Value loss (MSE)
-                value_loss = nn.MSELoss()(values.squeeze(), batch_returns)
+                # Value loss (클리핑 적용)
+                mse_loss = nn.MSELoss()(values.squeeze(), batch_returns)
+                value_loss = torch.clamp(mse_loss, min=0.0, max=100.0)
                 
                 # Entropy bonus (탐험 장려)
                 entropy_loss = -entropy.mean()
