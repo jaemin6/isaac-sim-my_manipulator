@@ -1,458 +1,259 @@
 # rl/networks.py
-import numpy as np
-import torch
-import torch.nn as nn
-from typing import List, Tuple
+"""
+강화학습 설정 파일
+
+모든 하이퍼파라미터와 환경 설정을 관리합니다.
+"""
+
+from dataclasses import dataclass
+from typing import List, Optional
 
 
-class ActorCritic(nn.Module):
-    """
-    Actor-Critic 네트워크
-    Actor: 정책 네트워크 (행동 선택)
-    Critic: 가치 네트워크 (상태 가치 평가)
-    """
+@dataclass
+class EnvironmentConfig:
+    """트레이딩 환경 설정"""
     
-    def __init__(
-        self,
-        input_dim: int,
-        action_dim: int,
-        hidden_dims: List[int] = [256, 128, 64],
-        activation: str = 'relu'
-    ):
-        """
-        Args:
-            input_dim: 입력 차원 (flatten된 observation 크기)
-            action_dim: 행동 차원
-            hidden_dims: 은닉층 크기 리스트
-            activation: 활성화 함수 ('relu', 'tanh', 'elu')
-        """
-        super(ActorCritic, self).__init__()
-        
-        self.input_dim = input_dim
-        self.action_dim = action_dim
-        
-        # 활성화 함수 선택
-        if activation == 'relu':
-            self.activation = nn.ReLU()
-        elif activation == 'tanh':
-            self.activation = nn.Tanh()
-        elif activation == 'elu':
-            self.activation = nn.ELU()
-        else:
-            self.activation = nn.ReLU()
-        
-        # Shared feature extractor
-        self.feature_extractor = nn.Sequential(
-            nn.Linear(input_dim, hidden_dims[0]),
-            self.activation,
-            nn.Dropout(0.2)
-        )
-        
-        # Actor network (policy)
-        actor_layers = []
-        prev_dim = hidden_dims[0]
-        for hidden_dim in hidden_dims[1:]:
-            actor_layers.extend([
-                nn.Linear(prev_dim, hidden_dim),
-                self.activation,
-                nn.Dropout(0.2)
-            ])
-            prev_dim = hidden_dim
-        
-        self.actor_backbone = nn.Sequential(*actor_layers)
-        
-        # Actor head: mean and log_std for Gaussian policy
-        self.actor_mean = nn.Linear(prev_dim, action_dim)
-        self.actor_log_std = nn.Linear(prev_dim, action_dim)
-        
-        # Critic network (value function)
-        critic_layers = []
-        prev_dim = hidden_dims[0]
-        for hidden_dim in hidden_dims[1:]:
-            critic_layers.extend([
-                nn.Linear(prev_dim, hidden_dim),
-                self.activation,
-                nn.Dropout(0.2)
-            ])
-            prev_dim = hidden_dim
-        
-        self.critic_backbone = nn.Sequential(*critic_layers)
-        self.critic_head = nn.Linear(prev_dim, 1)
-        
-        # Initialize weights
-        self._initialize_weights()
+    # 데이터 설정
+    window_size: int = 60  # 관찰 윈도우 크기 (60분)
     
-    def _initialize_weights(self):
-        """가중치 초기화 - Orthogonal initialization"""
-        for m in self.modules():
-            if isinstance(m, nn.Linear):
-                nn.init.orthogonal_(m.weight, gain=np.sqrt(2))
-                nn.init.constant_(m.bias, 0.0)
-        
-        # Actor mean head는 작은 값으로 초기화 (exploration)
-        nn.init.orthogonal_(self.actor_mean.weight, gain=0.01)
-        nn.init.constant_(self.actor_mean.bias, 0.0)
+    # 계정 설정
+    initial_balance: float = 10000.0  # 초기 자본금 ($10,000)
+    transaction_fee: float = 0.001  # 거래 수수료 (0.1%)
+    max_position: float = 1.0  # 최대 포지션 크기 (자본금 대비)
     
-    def forward(self, state: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """
-        Forward pass
-        
-        Args:
-            state: (batch_size, input_dim)
-        
-        Returns:
-            action_mean: (batch_size, action_dim) - 행동의 평균
-            action_log_std: (batch_size, action_dim) - 행동의 로그 표준편차
-            value: (batch_size, 1) - 상태 가치
-        """
-        # Shared features
-        features = self.feature_extractor(state)
-        
-        # Actor
-        actor_features = self.actor_backbone(features)
-        action_mean = torch.tanh(self.actor_mean(actor_features))  # [-1, 1] 범위로 제한
-        action_log_std = self.actor_log_std(actor_features)
-        action_log_std = torch.clamp(action_log_std, -20, 2)  # 안정성을 위해 clamp
-        
-        # Critic
-        critic_features = self.critic_backbone(features)
-        value = self.critic_head(critic_features)
-        
-        return action_mean, action_log_std, value
+    # 데이터 경로
+    data_dir: str = "data/processed"
     
-    def get_action(
-        self,
-        state: torch.Tensor,
-        deterministic: bool = False
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """
-        행동 샘플링
-        
-        Args:
-            state: (batch_size, input_dim)
-            deterministic: True면 평균값 사용, False면 샘플링
-        
-        Returns:
-            action: (batch_size, action_dim) - 선택된 행동
-            log_prob: (batch_size,) - 로그 확률
-            value: (batch_size, 1) - 상태 가치
-        """
-        from torch.distributions import Normal
-        
-        action_mean, action_log_std, value = self.forward(state)
-        action_std = torch.exp(action_log_std)
-        
-        if deterministic:
-            action = action_mean
-            # 결정적 행동의 log_prob은 의미 없지만 형식상 계산
-            dist = Normal(action_mean, action_std)
-            log_prob = dist.log_prob(action).sum(dim=-1)
-        else:
-            dist = Normal(action_mean, action_std)
-            action = dist.sample()
-            log_prob = dist.log_prob(action).sum(dim=-1)
-        
-        # Action을 [-1, 1] 범위로 클램핑
-        action = torch.clamp(action, -1.0, 1.0)
-        
-        return action, log_prob, value
-    
-    def evaluate_actions(
-        self,
-        state: torch.Tensor,
-        action: torch.Tensor
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """
-        행동 평가 (학습 시 사용)
-        
-        Args:
-            state: (batch_size, input_dim)
-            action: (batch_size, action_dim)
-        
-        Returns:
-            log_prob: (batch_size,) - 로그 확률
-            entropy: (batch_size,) - 엔트로피
-            value: (batch_size, 1) - 상태 가치
-        """
-        from torch.distributions import Normal
-        
-        action_mean, action_log_std, value = self.forward(state)
-        action_std = torch.exp(action_log_std)
-        
-        dist = Normal(action_mean, action_std)
-        log_prob = dist.log_prob(action).sum(dim=-1)
-        entropy = dist.entropy().sum(dim=-1)
-        
-        return log_prob, entropy, value
+    # 학습/검증/테스트 분할 비율
+    train_ratio: float = 0.7
+    val_ratio: float = 0.15
+    test_ratio: float = 0.15
 
 
-class RecurrentActorCritic(nn.Module):
-    """
-    LSTM 기반 Recurrent Actor-Critic 네트워크
-    시계열 데이터의 temporal dependency를 더 잘 포착
-    """
+@dataclass
+class NetworkConfig:
+    """신경망 구조 설정"""
     
-    def __init__(
-        self,
-        input_dim: int,
-        action_dim: int,
-        hidden_dim: int = 128,
-        num_layers: int = 2,
-        dropout: float = 0.2
-    ):
-        """
-        Args:
-            input_dim: 입력 차원 (각 타임스텝의 feature 수)
-            action_dim: 행동 차원
-            hidden_dim: LSTM hidden 차원
-            num_layers: LSTM 레이어 수
-            dropout: Dropout 비율
-        """
-        super(RecurrentActorCritic, self).__init__()
-        
-        self.input_dim = input_dim
-        self.action_dim = action_dim
-        self.hidden_dim = hidden_dim
-        self.num_layers = num_layers
-        
-        # LSTM for temporal features
-        self.lstm = nn.LSTM(
-            input_size=input_dim,
-            hidden_size=hidden_dim,
-            num_layers=num_layers,
-            batch_first=True,
-            dropout=dropout if num_layers > 1 else 0
-        )
-        
-        # Actor head
-        self.actor_mean = nn.Linear(hidden_dim, action_dim)
-        self.actor_log_std = nn.Linear(hidden_dim, action_dim)
-        
-        # Critic head
-        self.critic = nn.Linear(hidden_dim, 1)
-        
-        self._initialize_weights()
+    # 네트워크 아키텍처
+    hidden_dims: List[int] = None  # [256, 128, 64]
+    activation: str = 'relu'  # 'relu', 'tanh', 'elu'
     
-    def _initialize_weights(self):
-        """가중치 초기화"""
-        for name, param in self.lstm.named_parameters():
-            if 'weight' in name:
-                nn.init.orthogonal_(param)
-            elif 'bias' in name:
-                nn.init.constant_(param, 0.0)
-        
-        nn.init.orthogonal_(self.actor_mean.weight, gain=0.01)
-        nn.init.constant_(self.actor_mean.bias, 0.0)
-        nn.init.orthogonal_(self.actor_log_std.weight, gain=0.01)
-        nn.init.constant_(self.actor_log_std.bias, 0.0)
-        nn.init.orthogonal_(self.critic.weight, gain=1.0)
-        nn.init.constant_(self.critic.bias, 0.0)
+    # Recurrent 설정
+    use_recurrent: bool = False  # LSTM 사용 여부
+    lstm_hidden_dim: int = 128
+    lstm_num_layers: int = 2
     
-    def forward(
-        self,
-        state: torch.Tensor,
-        hidden_state: Tuple[torch.Tensor, torch.Tensor] = None
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
-        """
-        Forward pass with LSTM
-        
-        Args:
-            state: (batch_size, seq_len, input_dim) or (batch_size, input_dim)
-            hidden_state: (h_0, c_0) LSTM hidden state
-                h_0: (num_layers, batch_size, hidden_dim)
-                c_0: (num_layers, batch_size, hidden_dim)
-        
-        Returns:
-            action_mean: (batch_size, action_dim)
-            action_log_std: (batch_size, action_dim)
-            value: (batch_size, 1)
-            new_hidden_state: (h_n, c_n)
-        """
-        # state가 2D면 3D로 변환 (seq_len=1)
-        if state.dim() == 2:
-            state = state.unsqueeze(1)
-        
-        batch_size = state.size(0)
-        
-        # LSTM forward
-        if hidden_state is None:
-            # 초기 hidden state
-            h_0 = torch.zeros(self.num_layers, batch_size, self.hidden_dim).to(state.device)
-            c_0 = torch.zeros(self.num_layers, batch_size, self.hidden_dim).to(state.device)
-            hidden_state = (h_0, c_0)
-        
-        lstm_out, new_hidden_state = self.lstm(state, hidden_state)
-        
-        # 마지막 타임스텝의 출력 사용
-        features = lstm_out[:, -1, :]
-        
-        # Actor
-        action_mean = torch.tanh(self.actor_mean(features))
-        action_log_std = self.actor_log_std(features)
-        action_log_std = torch.clamp(action_log_std, -20, 2)
-        
-        # Critic
-        value = self.critic(features)
-        
-        return action_mean, action_log_std, value, new_hidden_state
+    # Dropout
+    dropout: float = 0.2
     
-    def get_action(
-        self,
-        state: torch.Tensor,
-        hidden_state: Tuple[torch.Tensor, torch.Tensor] = None,
-        deterministic: bool = False
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
-        """
-        행동 샘플링 (LSTM용)
-        
-        Args:
-            state: (batch_size, seq_len, input_dim) or (batch_size, input_dim)
-            hidden_state: LSTM hidden state
-            deterministic: 결정적 행동 선택 여부
-        
-        Returns:
-            action: (batch_size, action_dim)
-            log_prob: (batch_size,)
-            value: (batch_size, 1)
-            new_hidden_state: (h_n, c_n)
-        """
-        from torch.distributions import Normal
-        
-        action_mean, action_log_std, value, new_hidden_state = self.forward(state, hidden_state)
-        action_std = torch.exp(action_log_std)
-        
-        if deterministic:
-            action = action_mean
-            dist = Normal(action_mean, action_std)
-            log_prob = dist.log_prob(action).sum(dim=-1)
-        else:
-            dist = Normal(action_mean, action_std)
-            action = dist.sample()
-            log_prob = dist.log_prob(action).sum(dim=-1)
-        
-        action = torch.clamp(action, -1.0, 1.0)
-        
-        return action, log_prob, value, new_hidden_state
-    
-    def evaluate_actions(
-        self,
-        state: torch.Tensor,
-        action: torch.Tensor,
-        hidden_state: Tuple[torch.Tensor, torch.Tensor] = None
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """
-        행동 평가 (LSTM용)
-        
-        Args:
-            state: (batch_size, seq_len, input_dim)
-            action: (batch_size, action_dim)
-            hidden_state: LSTM hidden state (optional)
-        
-        Returns:
-            log_prob: (batch_size,)
-            entropy: (batch_size,)
-            value: (batch_size, 1)
-        """
-        from torch.distributions import Normal
-        
-        action_mean, action_log_std, value, _ = self.forward(state, hidden_state)
-        action_std = torch.exp(action_log_std)
-        
-        dist = Normal(action_mean, action_std)
-        log_prob = dist.log_prob(action).sum(dim=-1)
-        entropy = dist.entropy().sum(dim=-1)
-        
-        return log_prob, entropy, value
+    def __post_init__(self):
+        if self.hidden_dims is None:
+            self.hidden_dims = [256, 128, 64]
 
 
-class CNNActorCritic(nn.Module):
+@dataclass
+class PPOConfig:
+    """PPO 알고리즘 하이퍼파라미터"""
+    
+    # 학습률
+    learning_rate: float = 3e-4
+    lr_schedule: str = 'constant'  # 'constant', 'linear', 'exponential'
+    
+    # PPO 파라미터
+    gamma: float = 0.99  # 할인율
+    gae_lambda: float = 0.95  # GAE lambda
+    clip_epsilon: float = 0.2  # PPO clipping parameter
+    
+    # 손실 함수 계수
+    value_loss_coef: float = 0.5  # 가치 손실 계수
+    entropy_coef: float = 0.01  # 엔트로피 보너스 계수
+    
+    # 그래디언트
+    max_grad_norm: float = 0.5  # 그래디언트 클리핑
+    
+    # 학습 설정
+    n_epochs: int = 10  # PPO 업데이트 에폭 수
+    batch_size: int = 64  # 미니배치 크기
+    n_steps: int = 2048  # 업데이트당 스텝 수
+
+
+@dataclass
+class TrainingConfig:
+    """학습 설정"""
+    
+    # 에피소드 설정
+    max_episodes: int = 1000  # 최대 에피소드 수
+    max_steps_per_episode: int = 1000  # 에피소드당 최대 스텝 (10000 → 1000 단축!)
+    
+    # 로깅
+    log_interval: int = 10  # 로그 출력 간격 (에피소드)
+    save_interval: int = 50  # 모델 저장 간격 (에피소드)
+    eval_interval: int = 20  # 평가 간격 (에피소드)
+    
+    # 조기 종료
+    early_stopping: bool = True
+    patience: int = 100  # 성능 개선이 없을 때 기다리는 에피소드 수
+    min_improvement: float = 0.01  # 최소 개선폭
+    
+    # 체크포인트
+    checkpoint_dir: str = "checkpoints/rl"
+    best_model_path: str = "checkpoints/rl/best_model.pt"
+    
+    # 디바이스
+    device: str = 'cuda'  # 'cuda' or 'cpu'
+    
+    # 시드
+    seed: Optional[int] = 42
+
+
+@dataclass
+class EvaluationConfig:
+    """평가 설정"""
+    
+    n_eval_episodes: int = 10  # 평가 에피소드 수
+    deterministic: bool = True  # 결정적 행동 선택
+    
+    # 백테스팅
+    save_trades: bool = True  # 거래 내역 저장
+    plot_results: bool = True  # 결과 시각화
+    
+    # 성능 지표
+    calculate_sharpe: bool = True
+    calculate_sortino: bool = True
+    calculate_max_drawdown: bool = True
+
+
+@dataclass
+class RLConfig:
+    """전체 강화학습 설정 (모든 설정 통합)"""
+    
+    env: EnvironmentConfig = None
+    network: NetworkConfig = None
+    ppo: PPOConfig = None
+    training: TrainingConfig = None
+    evaluation: EvaluationConfig = None
+    
+    def __post_init__(self):
+        if self.env is None:
+            self.env = EnvironmentConfig()
+        if self.network is None:
+            self.network = NetworkConfig()
+        if self.ppo is None:
+            self.ppo = PPOConfig()
+        if self.training is None:
+            self.training = TrainingConfig()
+        if self.evaluation is None:
+            self.evaluation = EvaluationConfig()
+    
+    @classmethod
+    def default(cls):
+        """기본 설정 반환"""
+        return cls()
+    
+    @classmethod
+    def conservative(cls):
+        """보수적인 설정 (안정적인 학습)"""
+        config = cls()
+        config.ppo.learning_rate = 1e-4
+        config.ppo.clip_epsilon = 0.1
+        config.ppo.entropy_coef = 0.001
+        config.env.max_position = 0.5
+        return config
+    
+    @classmethod
+    def aggressive(cls):
+        """공격적인 설정 (빠른 학습, 높은 리스크)"""
+        config = cls()
+        config.ppo.learning_rate = 1e-3
+        config.ppo.clip_epsilon = 0.3
+        config.ppo.entropy_coef = 0.05
+        config.env.max_position = 2.0
+        return config
+    
+    @classmethod
+    def recurrent(cls):
+        """LSTM 기반 설정"""
+        config = cls()
+        config.network.use_recurrent = True
+        config.network.lstm_hidden_dim = 256
+        config.network.lstm_num_layers = 3
+        return config
+    
+    def to_dict(self):
+        """딕셔너리로 변환"""
+        return {
+            'environment': self.env.__dict__,
+            'network': self.network.__dict__,
+            'ppo': self.ppo.__dict__,
+            'training': self.training.__dict__,
+            'evaluation': self.evaluation.__dict__
+        }
+    
+    def print_config(self):
+        """설정 출력"""
+        print("=" * 60)
+        print("강화학습 설정")
+        print("=" * 60)
+        
+        print("\n[환경 설정]")
+        for key, value in self.env.__dict__.items():
+            print(f"  {key}: {value}")
+        
+        print("\n[네트워크 설정]")
+        for key, value in self.network.__dict__.items():
+            print(f"  {key}: {value}")
+        
+        print("\n[PPO 설정]")
+        for key, value in self.ppo.__dict__.items():
+            print(f"  {key}: {value}")
+        
+        print("\n[학습 설정]")
+        for key, value in self.training.__dict__.items():
+            print(f"  {key}: {value}")
+        
+        print("\n[평가 설정]")
+        for key, value in self.evaluation.__dict__.items():
+            print(f"  {key}: {value}")
+        
+        print("=" * 60)
+
+
+# 사전 정의된 설정들
+DEFAULT_CONFIG = RLConfig.default()
+CONSERVATIVE_CONFIG = RLConfig.conservative()
+AGGRESSIVE_CONFIG = RLConfig.aggressive()
+RECURRENT_CONFIG = RLConfig.recurrent()
+
+
+# 설정 로드 함수
+def get_config(config_name: str = 'default') -> RLConfig:
     """
-    CNN 기반 Actor-Critic (이미지 입력용)
-    주가 차트 이미지나 캔들스틱 차트를 입력으로 사용할 때 활용
+    설정 이름으로 설정 로드
+    
+    Args:
+        config_name: 'default', 'conservative', 'aggressive', 'recurrent'
+    
+    Returns:
+        RLConfig 객체
     """
+    configs = {
+        'default': DEFAULT_CONFIG,
+        'conservative': CONSERVATIVE_CONFIG,
+        'aggressive': AGGRESSIVE_CONFIG,
+        'recurrent': RECURRENT_CONFIG
+    }
     
-    def __init__(
-        self,
-        input_channels: int,
-        action_dim: int,
-        image_height: int = 84,
-        image_width: int = 84
-    ):
-        """
-        Args:
-            input_channels: 입력 채널 수 (예: RGB=3)
-            action_dim: 행동 차원
-            image_height: 이미지 높이
-            image_width: 이미지 너비
-        """
-        super(CNNActorCritic, self).__init__()
-        
-        # CNN feature extractor
-        self.conv = nn.Sequential(
-            nn.Conv2d(input_channels, 32, kernel_size=8, stride=4),
-            nn.ReLU(),
-            nn.Conv2d(32, 64, kernel_size=4, stride=2),
-            nn.ReLU(),
-            nn.Conv2d(64, 64, kernel_size=3, stride=1),
-            nn.ReLU()
-        )
-        
-        # CNN 출력 크기 계산
-        def conv_output_size(size, kernel_size, stride):
-            return (size - kernel_size) // stride + 1
-        
-        h = conv_output_size(conv_output_size(conv_output_size(image_height, 8, 4), 4, 2), 3, 1)
-        w = conv_output_size(conv_output_size(conv_output_size(image_width, 8, 4), 4, 2), 3, 1)
-        conv_output_dim = 64 * h * w
-        
-        # Fully connected layers
-        self.fc = nn.Sequential(
-            nn.Linear(conv_output_dim, 512),
-            nn.ReLU()
-        )
-        
-        # Actor head
-        self.actor_mean = nn.Linear(512, action_dim)
-        self.actor_log_std = nn.Linear(512, action_dim)
-        
-        # Critic head
-        self.critic = nn.Linear(512, 1)
-        
-        self._initialize_weights()
+    if config_name not in configs:
+        print(f"⚠️  Unknown config: {config_name}, using default")
+        return DEFAULT_CONFIG
     
-    def _initialize_weights(self):
-        """가중치 초기화"""
-        for m in self.modules():
-            if isinstance(m, (nn.Conv2d, nn.Linear)):
-                nn.init.orthogonal_(m.weight, gain=np.sqrt(2))
-                nn.init.constant_(m.bias, 0.0)
-        
-        nn.init.orthogonal_(self.actor_mean.weight, gain=0.01)
-        nn.init.constant_(self.actor_mean.bias, 0.0)
+    return configs[config_name]
+
+
+if __name__ == '__main__':
+    # 설정 테스트
+    print("\n기본 설정:")
+    DEFAULT_CONFIG.print_config()
     
-    def forward(self, state: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """
-        Forward pass
-        
-        Args:
-            state: (batch_size, channels, height, width)
-        
-        Returns:
-            action_mean, action_log_std, value
-        """
-        # CNN features
-        conv_features = self.conv(state)
-        conv_features = conv_features.view(conv_features.size(0), -1)
-        
-        # FC features
-        features = self.fc(conv_features)
-        
-        # Actor
-        action_mean = torch.tanh(self.actor_mean(features))
-        action_log_std = self.actor_log_std(features)
-        action_log_std = torch.clamp(action_log_std, -20, 2)
-        
-        # Critic
-        value = self.critic(features)
-        
-        return action_mean, action_log_std, value
+    print("\n\n보수적 설정:")
+    CONSERVATIVE_CONFIG.print_config()
