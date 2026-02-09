@@ -141,7 +141,7 @@ class TradingEnvironment(gym.Env):
             fee = trade_amount * self.transaction_fee
             
             # 거래 자체에 작은 긍정적 보상 (탐험 장려)
-            reward += 0.5
+            reward += 1.0  # 0.5 → 1.0
             
             # 포지션 종료 시 손익 계산
             if self.position != 0:
@@ -154,9 +154,9 @@ class TradingEnvironment(gym.Env):
                 self.balance += profit
                 self.total_profit += profit
                 
-                # 수익률을 보상으로 (스케일 증가)
+                # 수익률을 보상으로 (스케일 대폭 증가: 1000 → 5000)
                 profit_ratio = profit / self.initial_balance
-                reward += profit_ratio * 1000  # 100 → 1000 (10배 증가)
+                reward += profit_ratio * 5000  # 5배 증가!
                 
                 # 거래 기록
                 self.trade_history.append({
@@ -182,7 +182,7 @@ class TradingEnvironment(gym.Env):
                     'entry_price': self.entry_price
                 })
         
-        # 보유 중인 포지션의 미실현 손익 (보상 스케일 대폭 증가)
+        # 보유 중인 포지션의 미실현 손익 (보상 스케일 증가: 100 → 500)
         if self.position != 0:
             if self.position > 0:
                 price_change = (current_price - self.entry_price) / self.entry_price
@@ -191,26 +191,26 @@ class TradingEnvironment(gym.Env):
                 price_change = (self.entry_price - current_price) / self.entry_price
                 unrealized_pnl = price_change * abs(self.position) * self.initial_balance
             
-            # 미실현 손익을 큰 보상으로 (10 → 100, 10배 증가)
-            reward += unrealized_pnl / self.initial_balance * 100
+            # 미실현 손익을 큰 보상으로 (5배 증가)
+            reward += unrealized_pnl / self.initial_balance * 500
             
             # 포지션 방향이 맞으면 추가 보상
             if unrealized_pnl > 0:
-                reward += 1.0  # 올바른 방향 보너스
+                reward += 2.0  # 1.0 → 2.0 올바른 방향 보너스
         else:
-            # Hold 패널티 (아무것도 안 하는 걸 막기)
-            reward -= 0.5
+            # Hold 패널티 강화 (아무것도 안 하는 걸 막기)
+            reward -= 1.0  # 0.5 → 1.0 (2배 증가)
         
         # 잔액이 크게 줄어들면 페널티
         balance_ratio = self.balance / self.initial_balance
         if balance_ratio < 0.5:  # 50% 이상 손실
-            reward -= 10.0
+            reward -= 20.0  # 10.0 → 20.0
         elif balance_ratio < 0.8:  # 20% 이상 손실
-            reward -= 2.0
+            reward -= 5.0   # 2.0 → 5.0
         
         # 총 수익이 증가하면 보상
         if self.total_profit > 0:
-            reward += self.total_profit / self.initial_balance * 10
+            reward += self.total_profit / self.initial_balance * 50  # 10 → 50
         
         return reward
     
