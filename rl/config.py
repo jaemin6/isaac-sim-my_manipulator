@@ -83,7 +83,7 @@ class TrainingConfig:
     
     # 에피소드 설정
     max_episodes: int = 1000  # 최대 에피소드 수
-    max_steps_per_episode: int = 10000  # 에피소드당 최대 스텝
+    max_steps_per_episode: int = 1000  # 에피소드당 최대 스텝 (10000 → 1000 단축!)
     
     # 로깅
     log_interval: int = 10  # 로그 출력 간격 (에피소드)
@@ -92,7 +92,7 @@ class TrainingConfig:
     
     # 조기 종료
     early_stopping: bool = True
-    patience: int = 300  # 성능 개선이 없을 때 기다리는 에피소드 수
+    patience: int = 100  # 성능 개선이 없을 때 기다리는 에피소드 수
     min_improvement: float = 0.01  # 최소 개선폭
     
     # 체크포인트
@@ -154,9 +154,9 @@ class RLConfig:
     def conservative(cls):
         """보수적인 설정 (안정적인 학습)"""
         config = cls()
-        config.ppo.learning_rate = 3e-4
-        config.ppo.clip_epsilon = 0.2
-        config.ppo.entropy_coef = 0.01
+        config.ppo.learning_rate = 1e-4
+        config.ppo.clip_epsilon = 0.1
+        config.ppo.entropy_coef = 0.001
         config.env.max_position = 0.5
         return config
     
