@@ -4,6 +4,10 @@ Phase 3: Vision-based Control (HOMOGRAPHY VERSION)
 - 카메라 위치 고정 (1.0, 0.0, 1.5)
 - Homography 기반 정확한 좌표 변환
 - 4개 큐브로 초기 캘리브레이션
+
+[수정사항]
+- 모든 world.step(render=True) 루프 안에 app.update() 추가
+  (없으면 Isaac Sim UI가 루프 도는 동안 frozen됨)
 """
 
 import sys
@@ -19,6 +23,7 @@ sys.path.insert(0, utils_dir)
 import numpy as np
 import time
 import cv2
+import omni.kit.app
 from omni.isaac.core.utils.types import ArticulationAction
 
 from cube_utils import (
@@ -36,6 +41,9 @@ class VisionController:
         self.world = world
         self.camera = camera
         self.controller = franka.get_articulation_controller()
+
+        # ✅ app 참조 (매 루프마다 app.update() 호출용)
+        self.app = omni.kit.app.get_app()
         
         # 상태
         self.gripper_closed = False
@@ -60,6 +68,14 @@ class VisionController:
         print("[Phase 3] Vision Control (Homography) initialized")
         print("[Vision] ⚠️  Run calibration first: controller.calibrate_homography()")
     
+    def _step(self):
+        """
+        ✅ world.step + app.update 묶음 헬퍼
+        모든 루프에서 이걸 쓰면 UI가 살아있음
+        """
+        self.world.step(render=True)
+        self.app.update()
+
     def detect_cubes_from_camera(self, visualize=True):
         """카메라 이미지에서 큐브 감지"""
         
@@ -85,10 +101,10 @@ class VisionController:
         # 렌더링
         rep.orchestrator.step()
         
-        # 데이터 획득
+        # 데이터 획득 (✅ _step() 사용)
         rgb = None
         for _ in range(150):
-            self.world.step(render=True)
+            self._step()
             rgb = rgb_annot.get_data()
             if rgb is not None and len(rgb) > 0:
                 break
@@ -104,7 +120,7 @@ class VisionController:
         if img.dtype != np.uint8:
             img = (np.clip(img, 0, 1) * 255).astype(np.uint8)
         
-        # 밝기 정규화 (핵심!)
+        # 밝기 정규화
         img_normalized = self._normalize_brightness(img)
         
         print(f"[Vision Debug] Image shape: {img.shape}")
@@ -117,25 +133,25 @@ class VisionController:
         detected_cubes = []
         debug_img = img.copy()
         
-        # 개선된 색상 범위 (밝기 정규화 후)
+        # 색상 범위
         color_ranges = {
             'red': {
                 'hsv_ranges': [
-                    ([0, 80, 80], [10, 255, 255]),      # 더 넓게
+                    ([0, 80, 80], [10, 255, 255]),
                     ([170, 80, 80], [180, 255, 255])
                 ],
                 'index': 0
             },
             'green': {
-                'hsv_ranges': [([35, 60, 60], [85, 255, 255])],  # 35-85로 더 넓게!
+                'hsv_ranges': [([35, 60, 60], [85, 255, 255])],
                 'index': 1
             },
             'blue': {
-                'hsv_ranges': [([95, 80, 80], [130, 255, 255])],  # 더 넓게
+                'hsv_ranges': [([95, 80, 80], [130, 255, 255])],
                 'index': 2
             },
             'yellow': {
-                'hsv_ranges': [([18, 80, 80], [35, 255, 255])],  # 더 넓게
+                'hsv_ranges': [([18, 80, 80], [35, 255, 255])],
                 'index': 3
             }
         }
@@ -161,7 +177,7 @@ class VisionController:
             
             for cnt in contours:
                 area = cv2.contourArea(cnt)
-                if area > 200:  # 300 → 200 (더 민감하게)
+                if area > 200:
                     M = cv2.moments(cnt)
                     if M["m00"] != 0:
                         cx = int(M["m10"] / M["m00"])
@@ -218,22 +234,13 @@ class VisionController:
         return detected_cubes
     
     def _normalize_brightness(self, img):
-        """
-        밝기 정규화 (CLAHE)
-        → 조명 변화에 강인하게
-        """
-        # LAB 색공간 변환
+        """밝기 정규화 (CLAHE)"""
         lab = cv2.cvtColor(img, cv2.COLOR_RGB2LAB)
         l, a, b = cv2.split(lab)
-        
-        # L 채널만 CLAHE 적용
         clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
         l_clahe = clahe.apply(l)
-        
-        # 재결합
         lab_clahe = cv2.merge([l_clahe, a, b])
         img_normalized = cv2.cvtColor(lab_clahe, cv2.COLOR_LAB2RGB)
-        
         return img_normalized
     
     def _pixel_to_world_homography(self, px, py):
@@ -241,10 +248,7 @@ class VisionController:
         if self.homography_matrix is None:
             return np.array([0.5, 0.0, 0.025])
         
-        # 동차 좌표
         pixel_point = np.array([[px, py]], dtype=np.float32)
-        
-        # 변환
         world_point = cv2.perspectiveTransform(
             pixel_point.reshape(1, 1, 2),
             self.homography_matrix
@@ -257,17 +261,11 @@ class VisionController:
         return np.array([world_x, world_y, world_z])
     
     def calibrate_homography(self):
-        """
-        4개 큐브로 Homography 보정
-        
-        Returns:
-            bool: 성공 여부
-        """
+        """4개 큐브로 Homography 보정"""
         print("\n" + "="*60)
         print("HOMOGRAPHY CALIBRATION")
         print("="*60)
         
-        # 큐브 감지 (Homography 없이)
         self.homography_matrix = None
         detected = self.detect_cubes_from_camera(visualize=False)
         
@@ -275,7 +273,6 @@ class VisionController:
             print(f"[Vision] Need 4 cubes for calibration! (found {len(detected)})")
             return False
         
-        # 픽셀 좌표와 월드 좌표 수집
         pixel_points = []
         world_points = []
         
@@ -284,20 +281,18 @@ class VisionController:
             if gt_pos is None:
                 continue
             
-            # 해당 큐브 찾기
             found = False
             for cube in detected:
                 dist = np.linalg.norm(
                     np.array(cube['pixel_pos']) - np.array(detected[i]['pixel_pos'])
                 )
-                if dist < 50:  # 같은 큐브로 간주
+                if dist < 50:
                     pixel_points.append(cube['pixel_pos'])
                     world_points.append(gt_pos[:2])
                     found = True
                     break
             
             if not found:
-                # 임시: detected 순서대로 매칭
                 if i < len(detected):
                     pixel_points.append(detected[i]['pixel_pos'])
                     world_points.append(gt_pos[:2])
@@ -306,7 +301,6 @@ class VisionController:
             print(f"[Vision] Could not match 4 cubes! (matched {len(pixel_points)})")
             return False
         
-        # NumPy 배열로 변환
         src_points = np.array(pixel_points, dtype=np.float32)
         dst_points = np.array(world_points, dtype=np.float32)
         
@@ -315,7 +309,6 @@ class VisionController:
             wx, wy = world_points[i]
             print(f"  Cube {i}: Pixel({px:.0f}, {py:.0f}) → World({wx:.3f}, {wy:.3f})")
         
-        # Homography 계산
         self.homography_matrix, status = cv2.findHomography(src_points, dst_points)
         
         if self.homography_matrix is None:
@@ -327,7 +320,6 @@ class VisionController:
         print(f"\n[Calibration] Homography matrix:")
         print(self.homography_matrix)
         
-        # 검증
         print(f"\n[Calibration] Verification:")
         total_error = 0
         for i, (px, py) in enumerate(pixel_points):
@@ -340,14 +332,13 @@ class VisionController:
         avg_error = total_error / len(pixel_points)
         print(f"\n[Calibration] Average error: {avg_error*1000:.1f} mm")
         
-        if avg_error < 0.05:  # 50mm 이하
+        if avg_error < 0.05:
             print("[Calibration] ✅ SUCCESS!")
         else:
             print("[Calibration] ⚠️  High error, may need adjustment")
         
         print("="*60 + "\n")
         
-        # 재감지로 확인
         detected_new = self.detect_cubes_from_camera(visualize=True)
         
         return True
@@ -427,11 +418,11 @@ class VisionController:
             self.performance['detection_errors'].append(target_cube['detection_error'])
             print(f"[Vision] Detection error: {target_cube['detection_error']*1000:.2f} mm")
         
-        # Grasp 실행
+        # ✅ Grasp 실행 - 모든 루프에 _step() 사용
         print("[Vision] Opening gripper...")
         for _ in range(30):
             self.franka.gripper.open()
-            self.world.step(render=True)
+            self._step()
         self.gripper_closed = False
         
         angle = np.arctan2(cube_pos[1], cube_pos[0])
@@ -448,7 +439,7 @@ class VisionController:
                 )
             except:
                 pass
-            self.world.step(render=True)
+            self._step()
         
         grasp_pose = pre_grasp.copy()
         grasp_pose[3] -= 0.5
@@ -461,16 +452,16 @@ class VisionController:
                 )
             except:
                 pass
-            self.world.step(render=True)
+            self._step()
         
         print("[Vision] Closing gripper...")
         for _ in range(60):
             self.franka.gripper.close()
-            self.world.step(render=True)
+            self._step()
         self.gripper_closed = True
         
         for _ in range(20):
-            self.world.step(render=True)
+            self._step()
         
         attach_cube_to_ee(self.current_cube_index)
         self.cube_attached = True
@@ -487,7 +478,7 @@ class VisionController:
                 )
             except:
                 pass
-            self.world.step(render=True)
+            self._step()
         
         elapsed = time.time() - start_time
         self.performance['grasp_times'].append(elapsed)
@@ -512,6 +503,7 @@ class VisionController:
             angle, -0.5, 0.0, -2.0, 0.0, 1.8, 0.8, 0.01, 0.01
         ])
         
+        # ✅ 모든 루프에 _step() 사용
         for _ in range(200):
             try:
                 self.controller.apply_action(
@@ -519,7 +511,7 @@ class VisionController:
                 )
             except:
                 pass
-            self.world.step(render=True)
+            self._step()
         
         place_pose = hover_pose.copy()
         place_pose[3] -= 0.3
@@ -531,10 +523,10 @@ class VisionController:
                 )
             except:
                 pass
-            self.world.step(render=True)
+            self._step()
         
         for _ in range(30):
-            self.world.step(render=True)
+            self._step()
         
         detach_cube(self.current_cube_index)
         self.cube_attached = False
@@ -542,7 +534,7 @@ class VisionController:
         
         for _ in range(40):
             self.franka.gripper.open()
-            self.world.step(render=True)
+            self._step()
         self.gripper_closed = False
         
         retreat_pose = place_pose.copy()
@@ -556,7 +548,7 @@ class VisionController:
                 )
             except:
                 pass
-            self.world.step(render=True)
+            self._step()
         
         elapsed = time.time() - start_time
         self.performance['place_times'].append(elapsed)
