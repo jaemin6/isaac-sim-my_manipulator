@@ -24,7 +24,17 @@ def main():
     
     # 월드 생성 (로봇, 큐브, 카메라 포함)
     world, franka, camera = setup_world()
-    
+
+    # reset 전 플레이
+    import omni.timeline
+    timeline = omni.timeline.get_timeline_interface()
+    timeline.play()
+
+    world.reset()
+
+    for _ in range(50):
+        world.step(render = True)
+
     # 통합 컨트롤러 (모든 Phase 통합)
     controller = UnifiedController(franka, world, camera)
     
