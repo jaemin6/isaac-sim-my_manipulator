@@ -39,6 +39,10 @@ class UnifiedController:
         self.world = world
         self.camera = camera
         
+        # ✅ app 참조 추가 (multi-cube 모드에서 사용)
+        import omni.kit.app
+        self.app = omni.kit.app.get_app()
+        
         # Phase 컨트롤러들
         self.phase1 = JointController(franka, world)
         self.phase2 = IKController(franka, world)
@@ -286,7 +290,7 @@ class UnifiedController:
     def execute_multi_cube(self):
         """
         Multi-cube 모드 - 모든 큐브 처리
-        ✅ 상태머신 완료를 기다리도록 수정
+        ✅ 이미 처리한 큐브는 제외하도록 수정
         """
         cubes = get_all_cubes()
         
@@ -304,8 +308,19 @@ class UnifiedController:
         base_y = 0.0
         spacing = 0.08
         
+        # ✅ 처리한 큐브 인덱스 추적
+        processed_cubes = set()
+        
         for i, cube_info in enumerate(cubes):
-            print(f"\n--- Cube {i+1}/{len(cubes)} ---")
+            cube_idx = cube_info['index']
+            
+            # ✅ 이미 처리했으면 건너뛰기
+            if cube_idx in processed_cubes:
+                print(f"\n--- Cube {i+1}/{len(cubes)} (Cube_{cube_idx}) ---")
+                print(f"[Multi-cube] Already processed, skipping")
+                continue
+            
+            print(f"\n--- Cube {i+1}/{len(cubes)} (Cube_{cube_idx}) ---")
             
             # 목표 위치 설정
             self.target_position = np.array([
@@ -317,34 +332,33 @@ class UnifiedController:
             
             # ✅ Grasp 시작
             if self.current_phase == 1:
-                success = self.phase1.auto_grasp(cube_info['index'])
+                success = self.phase1.auto_grasp(cube_idx)
             elif self.current_phase == 2:
-                success = self.phase2.auto_grasp(cube_info['index'])
+                success = self.phase2.auto_grasp(cube_idx)
             elif self.current_phase == 3:
-                success = self.phase3.auto_grasp(cube_info['index'])
+                success = self.phase3.auto_grasp(cube_idx)
             else:
                 print(f"[Phase {self.current_phase}] 준비중")
                 break
             
             if not success:
-                print(f"[Warning] Failed to start grasp Cube_{cube_info['index']}")
+                print(f"[Warning] Failed to start grasp Cube_{cube_idx}")
                 continue
             
             # ✅ 상태머신 완료 대기 (Phase 3인 경우)
             if self.current_phase == 3:
-                # is_busy()가 False될 때까지 update() 계속 호출
                 while self.phase3.is_busy():
                     self.phase3.update()
                     self.world.step(render=True)
                     self.app.update()
+                
+                # Grasp 성공 확인
+                if not self.phase3.cube_attached:
+                    print(f"[Warning] Grasp failed for Cube_{cube_idx}")
+                    continue
             else:
-                # Phase 1, 2는 블로킹 방식이라 바로 완료됨
                 for _ in range(20):
                     self.world.step(render=True)
-            
-            if not self.phase3.cube_attached if self.current_phase == 3 else False:
-                print(f"[Warning] Grasp failed for Cube_{cube_info['index']}")
-                continue
             
             # ✅ Place 시작
             if self.current_phase == 1:
@@ -364,10 +378,13 @@ class UnifiedController:
                 for _ in range(30):
                     self.world.step(render=True)
             
-            print(f"[Multi-cube] ✓ Cube {i+1} complete")
+            # ✅ 처리 완료 표시
+            processed_cubes.add(cube_idx)
+            print(f"[Multi-cube] ✓ Cube {i+1} (Cube_{cube_idx}) complete")
         
         print(f"\n{'='*60}")
         print(f"✓ MULTI-CUBE COMPLETE")
+        print(f"Processed {len(processed_cubes)}/{len(cubes)} cubes")
         print(f"{'='*60}\n")
         
         if self.current_phase == 2:
