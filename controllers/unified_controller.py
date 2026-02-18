@@ -284,7 +284,10 @@ class UnifiedController:
             print("[Phase 4] RL - 준비중")
     
     def execute_multi_cube(self):
-        """Multi-cube 모드 - 모든 큐브 처리"""
+        """
+        Multi-cube 모드 - 모든 큐브 처리
+        ✅ 상태머신 완료를 기다리도록 수정
+        """
         cubes = get_all_cubes()
         
         if not cubes:
@@ -296,20 +299,23 @@ class UnifiedController:
         print(f"Processing {len(cubes)} cubes")
         print(f"{'='*60}\n")
         
+        # ✅ 테이블 위 목표 위치 (y=0.0 중심으로 양옆으로 배치)
         base_x = 0.5
-        base_y = -0.1
+        base_y = 0.0
         spacing = 0.08
         
         for i, cube_info in enumerate(cubes):
             print(f"\n--- Cube {i+1}/{len(cubes)} ---")
             
+            # 목표 위치 설정
             self.target_position = np.array([
                 base_x,
-                base_y + (i * spacing),
+                base_y + ((i - len(cubes)/2) * spacing),  # 중심 기준 양옆
                 0.52
             ])
             self.update_target_marker()
             
+            # ✅ Grasp 시작
             if self.current_phase == 1:
                 success = self.phase1.auto_grasp(cube_info['index'])
             elif self.current_phase == 2:
@@ -321,12 +327,26 @@ class UnifiedController:
                 break
             
             if not success:
-                print(f"[Warning] Failed to grasp Cube_{cube_info['index']}")
+                print(f"[Warning] Failed to start grasp Cube_{cube_info['index']}")
                 continue
             
-            for _ in range(20):
-                self.world.step(render=True)
+            # ✅ 상태머신 완료 대기 (Phase 3인 경우)
+            if self.current_phase == 3:
+                # is_busy()가 False될 때까지 update() 계속 호출
+                while self.phase3.is_busy():
+                    self.phase3.update()
+                    self.world.step(render=True)
+                    self.app.update()
+            else:
+                # Phase 1, 2는 블로킹 방식이라 바로 완료됨
+                for _ in range(20):
+                    self.world.step(render=True)
             
+            if not self.phase3.cube_attached if self.current_phase == 3 else False:
+                print(f"[Warning] Grasp failed for Cube_{cube_info['index']}")
+                continue
+            
+            # ✅ Place 시작
             if self.current_phase == 1:
                 self.phase1.place(self.target_position)
             elif self.current_phase == 2:
@@ -334,8 +354,17 @@ class UnifiedController:
             elif self.current_phase == 3:
                 self.phase3.place(self.target_position)
             
-            for _ in range(30):
-                self.world.step(render=True)
+            # ✅ Place 완료 대기
+            if self.current_phase == 3:
+                while self.phase3.is_busy():
+                    self.phase3.update()
+                    self.world.step(render=True)
+                    self.app.update()
+            else:
+                for _ in range(30):
+                    self.world.step(render=True)
+            
+            print(f"[Multi-cube] ✓ Cube {i+1} complete")
         
         print(f"\n{'='*60}")
         print(f"✓ MULTI-CUBE COMPLETE")
