@@ -118,7 +118,7 @@ class VisionController:
 
     def _get_camera_image(self):
         """
-        rep.orchestrator.step() 없이 카메라 이미지 취득
+        ✅ rep.orchestrator.step() 없이 카메라 이미지 취득
         rep.orchestrator.step()은 Timeline을 내부적으로 Stop시키는 버그가 있음
         → world.step(render=True) 몇 번으로 대체
         → 이미지 취득 후 Timeline이 멈췄으면 자동 복구
@@ -132,7 +132,7 @@ class VisionController:
 
         rgb = self.rgb_annot.get_data()
 
-        # Timeline 복구 보험: 이미지 취득 과정에서 멈췄으면 재시작
+        # ✅ Timeline 복구 보험: 이미지 취득 과정에서 멈췄으면 재시작
         if not self.timeline.is_playing():
             print("[Vision] ⚠️  Timeline stopped during capture, restarting...")
             self.timeline.play()
