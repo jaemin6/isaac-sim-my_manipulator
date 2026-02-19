@@ -290,7 +290,7 @@ class UnifiedController:
     def execute_multi_cube(self):
         """
         Multi-cube 모드 - 모든 큐브 처리
-        ✅ 이미 처리한 큐브는 제외하도록 수정
+        ✅ 한 곳에 위로 쌓기 (타워)
         """
         cubes = get_all_cubes()
         
@@ -300,13 +300,14 @@ class UnifiedController:
         
         print(f"\n{'='*60}")
         print(f"MULTI-CUBE MODE (Phase {self.current_phase})")
-        print(f"Processing {len(cubes)} cubes")
+        print(f"Processing {len(cubes)} cubes → Stacking vertically")
         print(f"{'='*60}\n")
         
-        # ✅ 테이블 위 목표 위치 (y=0.0 중심으로 양옆으로 배치)
-        base_x = 0.5
-        base_y = 0.0
-        spacing = 0.08
+        # ✅ 한 곳에 위로 쌓기 (타워 방식)
+        base_x = 0.50      # 테이블 중앙
+        base_y = 0.00      # 중앙
+        base_z = 0.52      # 테이블 위
+        cube_height = 0.05 # 큐브 하나 높이
         
         # ✅ 처리한 큐브 인덱스 추적
         processed_cubes = set()
@@ -322,21 +323,22 @@ class UnifiedController:
             
             print(f"\n--- Cube {i+1}/{len(cubes)} (Cube_{cube_idx}) ---")
             
-            # 목표 위치 설정
+            # ✅ 위로 쌓기 (z 좌표만 올라감)
             self.target_position = np.array([
                 base_x,
-                base_y + ((i - len(cubes)/2) * spacing),  # 중심 기준 양옆
-                0.52
+                base_y,
+                base_z + (i * cube_height)  # 아래부터 차곡차곡
             ])
+            print(f"[Target] ({self.target_position[0]:.2f}, {self.target_position[1]:.2f}, {self.target_position[2]:.2f})")
             self.update_target_marker()
             
-            # ✅ Grasp 시작
+            # ✅ Grasp 시작 (이미 처리한 큐브는 제외)
             if self.current_phase == 1:
                 success = self.phase1.auto_grasp(cube_idx)
             elif self.current_phase == 2:
                 success = self.phase2.auto_grasp(cube_idx)
             elif self.current_phase == 3:
-                success = self.phase3.auto_grasp(cube_idx)
+                success = self.phase3.auto_grasp(cube_idx, exclude_cubes=processed_cubes)
             else:
                 print(f"[Phase {self.current_phase}] 준비중")
                 break
@@ -383,7 +385,7 @@ class UnifiedController:
             print(f"[Multi-cube] ✓ Cube {i+1} (Cube_{cube_idx}) complete")
         
         print(f"\n{'='*60}")
-        print(f"✓ MULTI-CUBE COMPLETE")
+        print(f"✓ MULTI-CUBE COMPLETE - TOWER BUILT!")
         print(f"Processed {len(processed_cubes)}/{len(cubes)} cubes")
         print(f"{'='*60}\n")
         
