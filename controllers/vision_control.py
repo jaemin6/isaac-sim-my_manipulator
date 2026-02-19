@@ -4,8 +4,8 @@ Phase 3: Vision-based Control (HOMOGRAPHY VERSION)
 
 [수정사항 v5 - Timeline 멈춤 버그 수정]
 - rep.orchestrator.step() 제거
-     → 이게 Isaac Sim Timeline을 내부적으로 Stop시키는 원인이었음
-     → world.step(render=True) 몇 번으로 대체
+    → 이게 Isaac Sim Timeline을 내부적으로 Stop시키는 원인이었음
+    → world.step(render=True) 몇 번으로 대체
 - 카메라 이미지 취득 후 Timeline 상태 복구 보험 추가
 - 상태머신 유지 (UI 렌더링 정상 작동)
 """
@@ -191,8 +191,14 @@ class VisionController:
                 used.add(best_i)
         return matched
 
-    def detect_cubes_from_camera(self, visualize=True):
-        """카메라 이미지에서 큐브 감지"""
+    def detect_cubes_from_camera(self, visualize=True, skip_gt_matching=False):
+        """
+        카메라 이미지에서 큐브 감지
+        
+        Args:
+            visualize: 디버그 이미지 저장 여부
+            skip_gt_matching: True면 GT 매칭 건너뛰기 (multi-cube 모드용)
+        """
         img = self._get_camera_image()
         if img is None:
             return []
@@ -248,21 +254,31 @@ class VisionController:
             if visualize:
                 cv2.imwrite(f"debug_mask_{color_name}.png", mask)
 
-        detected_cubes = self._match_with_ground_truth(detected_cubes)
+        # ✅ GT 매칭은 skip_gt_matching=False일 때만
+        if not skip_gt_matching:
+            detected_cubes = self._match_with_ground_truth(detected_cubes)
 
         if visualize:
             cv2.imwrite("debug_camera.png", cv2.cvtColor(img, cv2.COLOR_RGB2BGR))
             cv2.imwrite("debug_detection.png", cv2.cvtColor(debug_img, cv2.COLOR_RGB2BGR))
 
-        print(f"[Vision] Detected {len(detected_cubes)} cubes:")
-        for cube in detected_cubes:
-            gt_pos = get_cube_position(cube['index'])
-            if gt_pos is not None:
-                error = np.linalg.norm(cube['position'][:2] - gt_pos[:2])
+        # ✅ GT 매칭 건너뛰면 색상 인덱스만 사용
+        if not skip_gt_matching:
+            print(f"[Vision] Detected {len(detected_cubes)} cubes:")
+            for cube in detected_cubes:
+                gt_pos = get_cube_position(cube['index'])
+                if gt_pos is not None:
+                    error = np.linalg.norm(cube['position'][:2] - gt_pos[:2])
+                    print(f"  {cube['color']} (Cube_{cube['index']}): "
+                          f"Pixel=({cube['pixel_pos'][0]}, {cube['pixel_pos'][1]}) | "
+                          f"Vision=({cube['position'][0]:.2f}, {cube['position'][1]:.2f}) | "
+                          f"GT=({gt_pos[0]:.2f}, {gt_pos[1]:.2f}) | Error={error*1000:.1f}mm")
+        else:
+            print(f"[Vision] Detected {len(detected_cubes)} cubes (by color only):")
+            for cube in detected_cubes:
                 print(f"  {cube['color']} (Cube_{cube['index']}): "
                       f"Pixel=({cube['pixel_pos'][0]}, {cube['pixel_pos'][1]}) | "
-                      f"Vision=({cube['position'][0]:.2f}, {cube['position'][1]:.2f}) | "
-                      f"GT=({gt_pos[0]:.2f}, {gt_pos[1]:.2f}) | Error={error*1000:.1f}mm")
+                      f"Vision=({cube['position'][0]:.2f}, {cube['position'][1]:.2f})")
 
         return detected_cubes
 
@@ -335,8 +351,14 @@ class VisionController:
     #  상태머신 진입점
     # ------------------------------------------------------------------ #
 
-    def auto_grasp(self, cube_index=None):
-        """상태머신 시작 - 실제 동작은 update()에서 매 프레임 진행"""
+    def auto_grasp(self, cube_index=None, exclude_cubes=None):
+        """
+        상태머신 시작 - 실제 동작은 update()에서 매 프레임 진행
+        
+        Args:
+            cube_index: 특정 큐브 인덱스 지정 (None이면 가장 가까운 큐브)
+            exclude_cubes: 제외할 큐브 인덱스 set (multi-cube 모드에서 사용)
+        """
         if not self.calibrated:
             print("[Vision] ⚠️  Not calibrated!")
             return False
@@ -347,10 +369,20 @@ class VisionController:
 
         print("\n[Phase 3: Vision] Starting vision-based grasp (state machine)...")
 
-        detected = self.detect_cubes_from_camera(visualize=True)
+        # ✅ exclude_cubes 사용 시 GT 매칭 건너뛰기 (색상 인덱스만 사용)
+        skip_matching = (exclude_cubes is not None and len(exclude_cubes) > 0)
+        detected = self.detect_cubes_from_camera(visualize=True, skip_gt_matching=skip_matching)
+        
         if not detected:
             print("[Vision] No cubes detected!")
             return False
+
+        # ✅ exclude_cubes에 있는 큐브는 제외
+        if exclude_cubes:
+            detected = [c for c in detected if c['index'] not in exclude_cubes]
+            if not detected:
+                print(f"[Vision] No cubes left after excluding {exclude_cubes}")
+                return False
 
         if cube_index is not None:
             target = next((c for c in detected if c['index'] == cube_index), None)
