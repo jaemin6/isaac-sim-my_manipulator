@@ -1,10 +1,11 @@
 # controllers/vision_control.py
 """
-Phase 3: Vision-based Control (STABLE STACKING VERSION)
-- 수직 스태킹을 위한 다중 관절 보정 적용
-- 충돌 방지를 위한 High-Transit 경로 추가
-- 물리 안정성을 위한 소프트 랜딩 적용
-- [수정] calibrate_homography(): homography 없이 픽셀 먼저 수집 후 계산
+Phase 3: Vision-based Control (STABLE STACKING VERSION v3)
+- 수직 스태킹을 위한 다중 관절 보정 (j1, j3, j5)
+- 충돌 방지를 위한 TRANSIT 경로
+- 물리 안정성을 위한 소프트 랜딩
+- calibrate_homography(): homography 없이 픽셀 먼저 수집 후 계산 (버그 수정)
+- 그리퍼 타이밍 개선 (60→80프레임, attach 대기 추가)
 """
 
 import sys
@@ -23,10 +24,12 @@ from cube_utils import (
     get_cube_position
 )
 
-# 상태 정의
+# ------------------------------------------------------------------ #
+#  상태 정의
+# ------------------------------------------------------------------ #
 STATE_IDLE          = "idle"
 STATE_OPEN_GRIPPER  = "open_gripper"
-STATE_TRANSIT       = "transit"        # 공중 안전 이동 상태
+STATE_TRANSIT       = "transit"
 STATE_PRE_GRASP     = "pre_grasp"
 STATE_APPROACH      = "approach"
 STATE_CLOSE_GRIPPER = "close_gripper"
@@ -38,15 +41,18 @@ STATE_DETACH        = "detach"
 STATE_OPEN_AFTER    = "open_after"
 STATE_RETREAT       = "retreat"
 
+# ------------------------------------------------------------------ #
+#  상수
+# ------------------------------------------------------------------ #
 CUBE_HEIGHT = 0.05
 
-# 홈 포지션 (카메라 시야 확보용)
+# 홈 포지션: place 완료 후 카메라 시야를 완전히 비워주는 대기 자세
 HOME_POSE = np.array([0.0, -1.2, 0.0, -1.2, 0.0, 1.6, 0.7, 0.04, 0.04])
 
-# 공중 대기용 안전 포즈 (이동 시 충돌 방지)
+# 공중 안전 이동 포즈: 이동 시 큐브/테이블 충돌 방지
 TRANSIT_POSE = np.array([0.0, -0.6, 0.0, -1.5, 0.0, 1.8, 0.8, 0.04, 0.04])
 
-# 캘리브레이션용 색상 순서 및 범위 (색상 = 큐브 인덱스 고정)
+# 색상 순서 (인덱스 = 큐브 인덱스)
 COLOR_ORDER = ['red', 'green', 'blue', 'yellow']
 COLOR_RANGES = {
     'red':    [([0,100,100],[10,255,255]), ([170,100,100],[180,255,255])],
@@ -166,10 +172,15 @@ class VisionController:
         return mask
 
     # ------------------------------------------------------------------ #
-    #  캘리브레이션 (수정: homography 없이 픽셀 먼저 수집)
+    #  캘리브레이션
     # ------------------------------------------------------------------ #
 
     def calibrate_homography(self):
+        """
+        ✅ 버그 수정: homography 없이 픽셀 좌표 먼저 수집 후 계산
+        기존에는 homography=None 상태에서 detect를 호출해
+        모든 위치가 (0.5, 0.0)으로 잡히는 문제가 있었음
+        """
         print("\n" + "="*60)
         print("HOMOGRAPHY CALIBRATION")
         print("="*60)
@@ -184,8 +195,7 @@ class VisionController:
 
         hsv = cv2.cvtColor(img, cv2.COLOR_RGB2HSV)
 
-        # ── 1단계: homography 없이 픽셀 좌표만 수집 ──────────────────
-        # (이 시점엔 homography_matrix=None이므로 위치 추정 불가 → 색상으로만 식별)
+        # 1단계: 색상별로 픽셀 좌표만 수집 (homography 없이)
         pixel_pts = []
         world_pts = []
 
@@ -220,7 +230,7 @@ class VisionController:
             print(f"[Vision] Need 4 cubes, found {len(pixel_pts)}")
             return False
 
-        # ── 2단계: 픽셀 → 월드 homography 계산 ───────────────────────
+        # 2단계: 픽셀 → 월드 homography 계산
         self.homography_matrix, _ = cv2.findHomography(
             np.array(pixel_pts, dtype=np.float32),
             np.array(world_pts,  dtype=np.float32)
@@ -266,7 +276,8 @@ class VisionController:
             if not cnts:
                 continue
             c = max(cnts, key=cv2.contourArea)
-            if cv2.contourArea(c) < 150:  # 쌓인 큐브는 작게 보일 수 있으므로 임계값 낮춤
+            # ✅ 쌓인 큐브는 카메라에서 작게 보일 수 있으므로 임계값 낮춤 (300→150)
+            if cv2.contourArea(c) < 150:
                 continue
             M = cv2.moments(c)
             cx = int(M["m10"] / M["m00"])
@@ -314,7 +325,7 @@ class VisionController:
         return matched
 
     # ------------------------------------------------------------------ #
-    #  Grasp / Place 시작
+    #  Grasp 시작
     # ------------------------------------------------------------------ #
 
     def auto_grasp(self, cube_index=None, exclude_cubes=None):
@@ -345,8 +356,8 @@ class VisionController:
 
         if 'detection_error' in target:
             self.performance['detection_errors'].append(target['detection_error'])
-            print(f"[Vision] Selected: {target['color']} (Cube_{self.current_cube_index})")
-            print(f"[Vision] Detection error: {target['detection_error']*1000:.2f} mm")
+        print(f"[Vision] Selected: {target['color']} (Cube_{self.current_cube_index})")
+        print(f"[Vision] Detection error: {target.get('detection_error', 0)*1000:.2f} mm")
 
         # 경로 설정
         self._transit_pose = TRANSIT_POSE.copy()
@@ -363,6 +374,10 @@ class VisionController:
         self.state = STATE_OPEN_GRIPPER
         return True
 
+    # ------------------------------------------------------------------ #
+    #  Place 시작
+    # ------------------------------------------------------------------ #
+
     def place(self, target_pos, stack_index=0):
         if not self.cube_attached:
             print("[Error] No cube attached!")
@@ -374,18 +389,32 @@ class VisionController:
         print("\n[Vision] Starting place (state machine)...")
         angle = np.arctan2(target_pos[1], target_pos[0])
 
-        # ✅ 수직 스태킹 핵심 보정
-        # 높이가 올라갈수록 어깨(j1)는 세우고(-), 팔꿈치(j3)는 펴야(+) 수직 유지
-        j1_corr = stack_index * 0.045
-        j3_corr = stack_index * 0.16
+        # ✅ 수직 스태킹 핵심 보정 (층이 올라갈수록 3개 관절 보정)
+        j1_corr = stack_index * 0.052   # 어깨: 층당 보정
+        j3_corr = stack_index * 0.185   # 팔꿈치: 층당 보정
+        j5_corr = stack_index * 0.10    # 손목: 그리퍼 수직 유지 (보수적으로 0.10)
 
-        print(f"[Vision] Stack index: {stack_index}, j1_corr: {j1_corr:.3f}, j3_corr: {j3_corr:.3f}")
+        print(f"[Vision] Stack index: {stack_index} | "
+              f"j1_corr={j1_corr:.3f}, j3_corr={j3_corr:.3f}, j5_corr={j5_corr:.3f}")
 
         self._transit_pose = TRANSIT_POSE.copy()
         self._transit_pose[0] = angle
-        self._hover_pose = np.array([angle, -0.5 + j1_corr, 0.0, -2.2 + j3_corr, 0.0, 1.8, 0.8, 0.01, 0.01])
+
+        # Hover: 큐브 바로 위 대기
+        self._hover_pose = np.array([
+            angle,
+            -0.55 + j1_corr,   # 어깨
+            0.0,
+            -2.3 + j3_corr,    # 팔꿈치
+            0.0,
+            1.9 + j5_corr,     # 손목 (수직 유지)
+            0.8,
+            0.01, 0.01
+        ])
+
+        # Down: 실제 내려놓는 지점
         self._place_pose = self._hover_pose.copy()
-        self._place_pose[3] -= 0.15  # 살짝 더 내려가서 안착
+        self._place_pose[3] -= 0.12  # 0.15보다 살짝 덜 내려가서 충돌 방지
 
         self.start_time = time.time()
         self.step_count = 0
@@ -448,13 +477,15 @@ class VisionController:
         elif self.state == STATE_CLOSE_GRIPPER:
             self.franka.gripper.close()
             self.step_count += 1
-            if self.step_count >= 60:
+            # ✅ 60 → 80프레임: 그리퍼가 시각적으로 완전히 닫힐 때까지 대기
+            if self.step_count >= 80:
                 print("[Vision] Closing gripper... done")
                 self.step_count = 0
                 self.state = STATE_ATTACH
 
         elif self.state == STATE_ATTACH:
             self.step_count += 1
+            # ✅ attach 전 미세 대기 (10프레임): 스냅 느낌 완화 + disjointed 경고 감소
             if self.step_count >= 10:
                 attach_cube_to_ee(self.current_cube_index)
                 self.cube_attached = True
@@ -471,7 +502,7 @@ class VisionController:
             if self.step_count >= 120:
                 elapsed = time.time() - self.start_time
                 self.performance['grasp_times'].append(elapsed)
-                print(f"[Vision] Lifting... done")
+                print("[Vision] Lifting... done")
                 print(f"\n[Phase 3] ✓ Vision Grasp Complete! (Time: {elapsed:.2f}s)")
                 self.step_count = 0
                 self.state = STATE_IDLE
@@ -487,7 +518,7 @@ class VisionController:
                 self.state = STATE_PLACE_DOWN
 
         elif self.state == STATE_PLACE_DOWN:
-            # ✅ 소프트 랜딩 (200 스텝)
+            # ✅ 소프트 랜딩 (200스텝)
             if self.step_count == 0:
                 self._traj = self._interpolate_joint_trajectory(curr_joints, self._place_pose, 200)
             if self.step_count < 200:
@@ -499,7 +530,8 @@ class VisionController:
 
         elif self.state == STATE_DETACH:
             self.step_count += 1
-            if self.step_count >= 50:  # 물리 안정화 대기
+            # ✅ 50프레임 대기: 물리 안정화 후 detach
+            if self.step_count >= 50:
                 detach_cube(self.current_cube_index)
                 self.cube_attached = False
                 self.current_cube_index = None
@@ -514,7 +546,7 @@ class VisionController:
                 self.state = STATE_RETREAT
 
         elif self.state == STATE_RETREAT:
-            # ✅ HOME_POSE로 복귀 → 카메라 시야 확보
+            # ✅ HOME_POSE 복귀: 카메라 시야 확보
             if self.step_count == 0:
                 self._traj = self._interpolate_joint_trajectory(curr_joints, HOME_POSE, 150)
             if self.step_count < 150:
