@@ -6,7 +6,7 @@
 
 [수정사항]
 - 키보드 콜백에서 직접 실행 → pending_action 플래그 방식으로 변경
-  (콜백에서 직접 실행하면 app.update()가 안 불려서 UI가 frozen됨)
+- execute_multi_cube(): 2x2 그리드 → 단일 위치 수직 스태킹으로 변경
 """
 
 import sys
@@ -17,7 +17,6 @@ from omni.isaac.core.objects import VisualSphere
 from pxr import UsdPhysics
 from omni.isaac.core.utils.stage import get_current_stage
 
-# 경로 추가
 current_dir = os.path.dirname(os.path.abspath(__file__))
 parent_dir = os.path.dirname(current_dir)
 utils_dir = os.path.join(parent_dir, 'utils')
@@ -31,6 +30,12 @@ from controllers.vision_control import VisionController
 from cube_utils import get_all_cubes
 
 
+# ✅ 스태킹 설정 - 씬에 맞게 조정
+STACK_TARGET_XY = (0.50, 0.00)   # 쌓을 XY 목표 위치
+STACK_BASE_Z    = 0.52            # 테이블 위 기본 Z 높이
+CUBE_HEIGHT     = 0.05            # 큐브 한 개 높이
+
+
 class UnifiedController:
     """모든 Phase를 통합한 컨트롤러"""
     
@@ -39,61 +44,41 @@ class UnifiedController:
         self.world = world
         self.camera = camera
         
-        # ✅ app 참조 추가 (multi-cube 모드에서 사용)
         import omni.kit.app
         self.app = omni.kit.app.get_app()
         
-        # Phase 컨트롤러들
         self.phase1 = JointController(franka, world)
         self.phase2 = IKController(franka, world)
         self.phase3 = VisionController(franka, world, camera)
-        # Phase 4는 나중에 추가
 
-        # Phase 3 보정 플래그
         self.phase3_calibrated = False
-
-        # 현재 모드
         self.current_phase = 1
-        
-        # 목표 위치
         self.target_position = np.array([0.3, 0.3, 0.55])
-        
-        # ✅ [수정] 키보드 콜백에서 직접 실행하지 않고 플래그만 세팅
-        # None / 'grasp' / 'place' / 'multi'
         self.pending_action = None
 
-        # 목표 마커 생성
         self.create_target_marker()
-        
-        # 키보드 설정
         self.setup_keyboard()
-        
         self.print_controls()
     
     def print_controls(self):
-        """컨트롤 가이드 출력"""
         print("\n" + "="*60)
         print("통합 로봇 학습 시스템")
         print("="*60)
         print("MODE SELECTION:")
-        print("  1         : Phase 1 - Joint Control (기존 방식)")
-        print("  2         : Phase 2 - IK Control (정밀 제어)")
-        print("  3         : Phase 3 - Vision (카메라 인식)")
-        print("  4         : Phase 4 - RL (강화학습) [준비중]")
+        print("  1         : Phase 1 - Joint Control")
+        print("  2         : Phase 2 - IK Control")
+        print("  3         : Phase 3 - Vision")
+        print("  4         : Phase 4 - RL [준비중]")
         print("")
         print("ACTIONS:")
-        print("  SPACE     : Auto-Grasp (현재 모드)")
+        print("  SPACE     : Auto-Grasp")
         print("  P         : Place")
-        print("  M         : Multi-Cube Mode (모든 큐브 처리)")
-        print("  L         : Show Performance (Phase 2/3)")
+        print("  M         : Multi-Cube Stacking Mode")
+        print("  L         : Show Performance")
         print("  C         : Compare All Phases")
         print("")
         print("MANUAL CONTROL (Phase 1 only):")
-        print("  W/S       : Shoulder Up/Down")
-        print("  A/D       : Base Rotate")
-        print("  Q/E       : Elbow")
-        print("  R/F       : Wrist")
-        print("  G         : Toggle Gripper")
+        print("  W/S/A/D/Q/E/R/F/G")
         print("")
         print("TARGET POSITION:")
         print("  Arrow Keys: Move target (X/Y)")
@@ -103,17 +88,15 @@ class UnifiedController:
         print("="*60 + "\n")
     
     def create_target_marker(self):
-        """목표 위치 마커 생성"""
         self.target_marker = VisualSphere(
             prim_path="/World/TargetMarker",
             name="target_marker",
             position=self.target_position,
             radius=0.03,
-            color=np.array([0.0, 1.0, 0.0])  # 초록색
+            color=np.array([0.0, 1.0, 0.0])
         )
         self.world.scene.add(self.target_marker)
         
-        # Physics 제거 (마커는 물리 없음)
         stage = get_current_stage()
         marker_prim = stage.GetPrimAtPath("/World/TargetMarker")
         if marker_prim.HasAPI(UsdPhysics.RigidBodyAPI):
@@ -122,7 +105,6 @@ class UnifiedController:
             marker_prim.RemoveAPI(UsdPhysics.CollisionAPI)
     
     def setup_keyboard(self):
-        """키보드 입력 설정"""
         import omni.appwindow
         appwindow = omni.appwindow.get_default_app_window()
         input_iface = carb.input.acquire_input_interface()
@@ -132,37 +114,24 @@ class UnifiedController:
         )
     
     def _on_keyboard_event(self, event, *args, **kwargs):
-        """
-        키보드 이벤트 핸들러
-
-        ✅ [수정 핵심]
-        여기서 execute_grasp() 같은 긴 작업을 직접 호출하면
-        app.update()가 17초 동안 안 불려서 UI가 frozen됨.
-        → 플래그(pending_action)만 세팅하고, 실제 실행은 update()에서.
-        """
         if event.type == carb.input.KeyboardEventType.KEY_PRESS:
             
-            # ===== 모드 전환 =====
             if event.input == carb.input.KeyboardInput.KEY_1:
                 self.current_phase = 1
                 print(f"\n[Mode] Phase 1: Joint Control")
                 self.print_phase_info()
-            
             elif event.input == carb.input.KeyboardInput.KEY_2:
                 self.current_phase = 2
                 print(f"\n[Mode] Phase 2: IK Control")
                 self.print_phase_info()
-            
             elif event.input == carb.input.KeyboardInput.KEY_3:
                 self.current_phase = 3
                 print(f"\n[Mode] Phase 3: Vision-based")
                 self.print_phase_info()
-            
             elif event.input == carb.input.KeyboardInput.KEY_4:
                 self.current_phase = 4
                 print(f"\n[Mode] Phase 4: RL [준비중]")
             
-            # ===== 액션: 직접 실행 X → 플래그만 세팅 =====
             elif event.input == carb.input.KeyboardInput.SPACE:
                 if self.pending_action is None:
                     print("[Input] SPACE → grasp 예약됨")
@@ -179,18 +148,16 @@ class UnifiedController:
             
             elif event.input == carb.input.KeyboardInput.M:
                 if self.pending_action is None:
-                    print("[Input] M → multi-cube 예약됨")
+                    print("[Input] M → multi-cube 스태킹 예약됨")
                     self.pending_action = 'multi'
                 else:
                     print(f"[Input] 이미 '{self.pending_action}' 실행 중, 무시됨")
             
             elif event.input == carb.input.KeyboardInput.L:
                 self.show_performance()
-            
             elif event.input == carb.input.KeyboardInput.C:
                 self.compare_phases()
             
-            # ===== Phase 1 전용: 수동 제어 =====
             elif self.current_phase == 1:
                 if event.input == carb.input.KeyboardInput.W:
                     self.phase1.manual_control('w')
@@ -211,7 +178,6 @@ class UnifiedController:
                 elif event.input == carb.input.KeyboardInput.G:
                     self.phase1.manual_control('g')
             
-            # ===== 목표 위치 조정 =====
             if event.input == carb.input.KeyboardInput.UP:
                 self.target_position[0] += 0.05
                 self.update_target_marker()
@@ -232,28 +198,21 @@ class UnifiedController:
                 self.update_target_marker()
     
     def update_target_marker(self):
-        """목표 마커 위치 업데이트"""
         self.target_marker.set_world_pose(position=self.target_position)
         print(f"[Target] ({self.target_position[0]:.2f}, {self.target_position[1]:.2f}, {self.target_position[2]:.2f})")
     
     def print_phase_info(self):
-        """현재 Phase 정보 출력"""
         if self.current_phase == 1:
             print("  - Joint angle 기반 제어")
-            print("  - W/S/A/D/Q/E/R/F로 수동 제어 가능")
         elif self.current_phase == 2:
             print("  - Inverse Kinematics 기반")
-            print("  - mm 단위 정밀 제어")
-            print("  - 성능 측정 자동 기록")
         elif self.current_phase == 3:
             print("  - 카메라 비전 기반 인식")
             print("  - RGB 색상으로 큐브 감지")
-            print("  - Detection 오차 측정")
     
     # ===== 공통 인터페이스 =====
     
     def execute_grasp(self):
-        """현재 Phase에 따라 grasp 실행"""
         if self.current_phase == 1:
             self.phase1.auto_grasp()
         elif self.current_phase == 2:
@@ -267,17 +226,14 @@ class UnifiedController:
                 if self.phase3.calibrate_homography():
                     self.phase3_calibrated = True
                     print("[Setup] ✓ Calibration complete!")
-                    print("="*60 + "\n")
                 else:
                     print("[Warning] Calibration failed. Trying anyway...")
-                    print("="*60 + "\n")
-
+                print("="*60 + "\n")
             self.phase3.auto_grasp()
         elif self.current_phase == 4:
             print("[Phase 4] RL - 준비중")
     
     def execute_place(self):
-        """현재 Phase에 따라 place 실행"""
         if self.current_phase == 1:
             self.phase1.place(self.target_position)
         elif self.current_phase == 2:
@@ -289,8 +245,8 @@ class UnifiedController:
     
     def execute_multi_cube(self):
         """
-        Multi-cube 모드 - 모든 큐브 처리
-        ✅ 한 곳에 위로 쌓기 (타워)
+        ✅ Multi-cube 스태킹 모드
+        모든 큐브를 동일한 XY 위치에 수직으로 쌓음
         """
         cubes = get_all_cubes()
         
@@ -298,78 +254,79 @@ class UnifiedController:
             print("[Error] No cubes found!")
             return
         
+        num_cubes = len(cubes)
+        
         print(f"\n{'='*60}")
-        print(f"MULTI-CUBE MODE (Phase {self.current_phase})")
-        print(f"Processing {len(cubes)} cubes → Stacking vertically")
+        print(f"STACKING MODE (Phase {self.current_phase})")
+        print(f"Stacking {num_cubes} cubes at XY={STACK_TARGET_XY}")
         print(f"{'='*60}\n")
-        
-        # ✅ 한 곳에 위로 쌓기 (타워 방식)
-        base_x = 0.50      # 테이블 중앙
-        base_y = 0.00      # 중앙
-        base_z = 0.52      # 테이블 위
-        cube_height = 0.05 # 큐브 하나 높이
-        
-        # ✅ 처리한 큐브 인덱스 추적
-        processed_cubes = set()
-        
-        for i, cube_info in enumerate(cubes):
-            cube_idx = cube_info['index']
-            
-            # ✅ 이미 처리했으면 건너뛰기
-            if cube_idx in processed_cubes:
-                print(f"\n--- Cube {i+1}/{len(cubes)} (Cube_{cube_idx}) ---")
-                print(f"[Multi-cube] Already processed, skipping")
-                continue
-            
-            print(f"\n--- Cube {i+1}/{len(cubes)} (Cube_{cube_idx}) ---")
-            
-            # ✅ 위로 쌓기 (z 좌표만 올라감)
-            self.target_position = np.array([
-                base_x,
-                base_y,
-                base_z + (i * cube_height)  # 아래부터 차곡차곡
-            ])
-            print(f"[Target] ({self.target_position[0]:.2f}, {self.target_position[1]:.2f}, {self.target_position[2]:.2f})")
+
+        # ✅ Phase 3 캘리브레이션 먼저
+        if self.current_phase == 3 and not self.phase3_calibrated:
+            print("[Setup] Running camera calibration...")
+            if self.phase3.calibrate_homography():
+                self.phase3_calibrated = True
+                print("[Setup] ✓ Calibration complete!")
+            else:
+                print("[Warning] Calibration failed. Trying anyway...")
+
+        placed_cubes = set()   # 이미 집어서 올린 큐브 인덱스
+
+        for stack_i in range(num_cubes):
+            print(f"\n--- Cube {stack_i + 1}/{num_cubes} ---")
+
+            # ✅ 목표 Z = 기본 높이 + 쌓인 큐브 수 × 큐브 높이
+            target_z = STACK_BASE_Z + stack_i * CUBE_HEIGHT
+            self.target_position = np.array([STACK_TARGET_XY[0], STACK_TARGET_XY[1], target_z])
+            print(f"[Target] Stack layer {stack_i + 1}: "
+                  f"XY=({STACK_TARGET_XY[0]:.2f}, {STACK_TARGET_XY[1]:.2f}), Z={target_z:.3f}m")
             self.update_target_marker()
-            
-            # ✅ Grasp 시작 (이미 처리한 큐브는 제외)
+
+            # ── GRASP ─────────────────────────────────────────────
             if self.current_phase == 1:
-                success = self.phase1.auto_grasp(cube_idx)
+                success = self.phase1.auto_grasp()
             elif self.current_phase == 2:
-                success = self.phase2.auto_grasp(cube_idx)
+                success = self.phase2.auto_grasp()
             elif self.current_phase == 3:
-                success = self.phase3.auto_grasp(cube_idx, exclude_cubes=processed_cubes)
+                # ✅ 이미 집은 큐브 제외하고 감지
+                success = self.phase3.auto_grasp(exclude_cubes=placed_cubes)
             else:
                 print(f"[Phase {self.current_phase}] 준비중")
                 break
             
             if not success:
-                print(f"[Warning] Failed to start grasp Cube_{cube_idx}")
+                print(f"[Warning] Grasp 시작 실패, 건너뜀")
                 continue
-            
-            # ✅ 상태머신 완료 대기 (Phase 3인 경우)
+
+            # ✅ 상태머신 완료 대기
             if self.current_phase == 3:
+                # ✅ grasp 시작 직후 어떤 큐브를 잡는지 기록
+                grabbed_index = self.phase3.current_cube_index
+
                 while self.phase3.is_busy():
                     self.phase3.update()
                     self.world.step(render=True)
                     self.app.update()
-                
-                # Grasp 성공 확인
+
                 if not self.phase3.cube_attached:
-                    print(f"[Warning] Grasp failed for Cube_{cube_idx}")
+                    print(f"[Warning] Grasp 실패 (cube not attached)")
                     continue
+
+                placed_cubes.add(grabbed_index)
+                print(f"[Stack] Cube_{grabbed_index} 집음. 제외 목록: {placed_cubes}")
             else:
                 for _ in range(20):
                     self.world.step(render=True)
-            
-            # ✅ Place 시작
+
+            # ── PLACE ─────────────────────────────────────────────
             if self.current_phase == 1:
                 self.phase1.place(self.target_position)
             elif self.current_phase == 2:
                 self.phase2.place(self.target_position)
             elif self.current_phase == 3:
-                self.phase3.place(self.target_position)
-            
+                # ✅ stack_index 전달 → place()에서 Z 높이 자동 보정
+                self.phase3.place(self.target_position, stack_index=stack_i)
+
             # ✅ Place 완료 대기
             if self.current_phase == 3:
                 while self.phase3.is_busy():
@@ -379,23 +336,19 @@ class UnifiedController:
             else:
                 for _ in range(30):
                     self.world.step(render=True)
-            
-            # ✅ 처리 완료 표시
-            processed_cubes.add(cube_idx)
-            print(f"[Multi-cube] ✓ Cube {i+1} (Cube_{cube_idx}) complete")
-        
+
+            print(f"[Stack] ✓ Cube {stack_i + 1} placed at layer {stack_i + 1} (Z={target_z:.3f}m)")
+
         print(f"\n{'='*60}")
-        print(f"✓ MULTI-CUBE COMPLETE - TOWER BUILT!")
-        print(f"Processed {len(processed_cubes)}/{len(cubes)} cubes")
+        print(f"✓ STACKING COMPLETE - {len(placed_cubes)}/{num_cubes} cubes stacked!")
         print(f"{'='*60}\n")
-        
+
         if self.current_phase == 2:
             self.phase2.print_performance()
         elif self.current_phase == 3:
             self.phase3.print_performance()
     
     def show_performance(self):
-        """성능 로그 출력"""
         if self.current_phase == 2:
             self.phase2.print_performance()
         elif self.current_phase == 3:
@@ -404,7 +357,6 @@ class UnifiedController:
             print(f"[Phase {self.current_phase}] Performance tracking not available")
     
     def compare_phases(self):
-        """Phase 간 성능 비교"""
         print(f"\n{'='*60}")
         print("PHASE COMPARISON")
         print(f"{'='*60}\n")
@@ -435,22 +387,13 @@ class UnifiedController:
         
         print("Phase 1: Joint Control - Manual tracking needed")
         print("Phase 4: RL - Not implemented")
-        
         print(f"\n{'='*60}\n")
     
     def update(self):
-        """
-        매 프레임 업데이트 - main.py의 루프에서 호출됨
-
-        ✅ [수정 핵심]
-        pending_action 플래그를 확인해서 메인 루프 안에서 실행.
-        이렇게 해야 execute_grasp() 내부 루프 사이에
-        main.py의 app.update()가 정상적으로 불림.
-        """
-        # 예약된 액션이 있으면 실행
+        """매 프레임 업데이트"""
         if self.pending_action is not None:
             action = self.pending_action
-            self.pending_action = None  # 먼저 초기화 (중복 실행 방지)
+            self.pending_action = None
 
             if action == 'grasp':
                 self.execute_grasp()
@@ -459,11 +402,9 @@ class UnifiedController:
             elif action == 'multi':
                 self.execute_multi_cube()
 
-        # 각 Phase별 프레임 업데이트
         if self.current_phase == 1:
             self.phase1.update()
         elif self.current_phase == 2:
             self.phase2.update()
         elif self.current_phase == 3:
             self.phase3.update()
-        # Phase 4는 나중에
