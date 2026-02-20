@@ -1,8 +1,6 @@
-# rl/config.py
+# rl/config.py (V3 - 보수적 설정)
 """
-강화학습 설정 파일
-
-모든 하이퍼파라미터와 환경 설정을 관리합니다.
+강화학습 설정 V3 - 좋은 거래 학습
 """
 
 from dataclasses import dataclass
@@ -13,18 +11,16 @@ from typing import List, Optional
 class EnvironmentConfig:
     """트레이딩 환경 설정"""
     
-    # 데이터 설정
-    window_size: int = 60  # 관찰 윈도우 크기 (60분)
+    window_size: int = 60
+    initial_balance: float = 10000.0
+    transaction_fee: float = 0.001
+    max_position: float = 1.0
     
-    # 계정 설정
-    initial_balance: float = 10000.0  # 초기 자본금 ($10,000)
-    transaction_fee: float = 0.001  # 거래 수수료 (0.1%)
-    max_position: float = 1.0  # 최대 포지션 크기 (자본금 대비)
+    # 🆕 V3: 거래 제어
+    min_hold_steps: int = 5  # 최소 홀딩 시간
+    position_change_threshold: float = 0.3  # 포지션 변경 임계값
     
-    # 데이터 경로
     data_dir: str = "data/processed"
-    
-    # 학습/검증/테스트 분할 비율
     train_ratio: float = 0.7
     val_ratio: float = 0.15
     test_ratio: float = 0.15
@@ -34,16 +30,11 @@ class EnvironmentConfig:
 class NetworkConfig:
     """신경망 구조 설정"""
     
-    # 네트워크 아키텍처
-    hidden_dims: List[int] = None  # [256, 128, 64]
-    activation: str = 'relu'  # 'relu', 'tanh', 'elu'
-    
-    # Recurrent 설정
-    use_recurrent: bool = False  # LSTM 사용 여부
+    hidden_dims: List[int] = None
+    activation: str = 'relu'
+    use_recurrent: bool = False
     lstm_hidden_dim: int = 128
     lstm_num_layers: int = 2
-    
-    # Dropout
     dropout: float = 0.2
     
     def __post_init__(self):
@@ -55,54 +46,46 @@ class NetworkConfig:
 class PPOConfig:
     """PPO 알고리즘 하이퍼파라미터"""
     
-    # 학습률
     learning_rate: float = 3e-4
-    lr_schedule: str = 'constant'  # 'constant', 'linear', 'exponential'
+    lr_schedule: str = 'constant'
     
-    # PPO 파라미터
-    gamma: float = 0.99  # 할인율
-    gae_lambda: float = 0.95  # GAE lambda
-    clip_epsilon: float = 0.2  # PPO clipping parameter
+    gamma: float = 0.99
+    gae_lambda: float = 0.95
+    clip_epsilon: float = 0.2
     
-    # 손실 함수 계수
-    value_loss_coef: float = 0.5  # 가치 손실 계수
-    entropy_coef: float = 0.01  # 엔트로피 보너스 계수
+    # 🔥 V3: 엔트로피 대폭 감소
+    value_loss_coef: float = 0.5
+    entropy_coef: float = 0.02  # 🔥 0.1 → 0.02 (5배 감소!)
     
-    # 그래디언트
-    max_grad_norm: float = 0.5  # 그래디언트 클리핑
+    max_grad_norm: float = 0.5
     
-    # 학습 설정
-    n_epochs: int = 10  # PPO 업데이트 에폭 수
-    batch_size: int = 64  # 미니배치 크기
-    n_steps: int = 2048  # 업데이트당 스텝 수
+    n_epochs: int = 10
+    batch_size: int = 64
+    n_steps: int = 2048
 
 
 @dataclass
 class TrainingConfig:
     """학습 설정"""
     
-    # 에피소드 설정
-    max_episodes: int = 1000  # 최대 에피소드 수
-    max_steps_per_episode: int = 1000  # 에피소드당 최대 스텝 (10000 → 1000 단축!)
+    max_episodes: int = 1000
+    max_steps_per_episode: int = 2000
     
-    # 로깅
-    log_interval: int = 10  # 로그 출력 간격 (에피소드)
-    save_interval: int = 50  # 모델 저장 간격 (에피소드)
-    eval_interval: int = 20  # 평가 간격 (에피소드)
+    log_interval: int = 10
+    save_interval: int = 50
+    eval_interval: int = 20
     
-    # 조기 종료
+    run_diagnostic: bool = True
+    check_actions_every: int = 100
+    
     early_stopping: bool = True
-    patience: int = 100  # 성능 개선이 없을 때 기다리는 에피소드 수
-    min_improvement: float = 0.01  # 최소 개선폭
+    patience: int = 300  # 🔥 200 → 300 (더 오래 기다림)
+    min_improvement: float = 0.01
     
-    # 체크포인트
     checkpoint_dir: str = "checkpoints/rl"
     best_model_path: str = "checkpoints/rl/best_model.pt"
     
-    # 디바이스
-    device: str = 'cuda'  # 'cuda' or 'cpu'
-    
-    # 시드
+    device: str = 'cuda'
     seed: Optional[int] = 42
 
 
@@ -110,14 +93,12 @@ class TrainingConfig:
 class EvaluationConfig:
     """평가 설정"""
     
-    n_eval_episodes: int = 10  # 평가 에피소드 수
-    deterministic: bool = True  # 결정적 행동 선택
+    n_eval_episodes: int = 10
+    deterministic: bool = True
     
-    # 백테스팅
-    save_trades: bool = True  # 거래 내역 저장
-    plot_results: bool = True  # 결과 시각화
+    save_trades: bool = True
+    plot_results: bool = True
     
-    # 성능 지표
     calculate_sharpe: bool = True
     calculate_sortino: bool = True
     calculate_max_drawdown: bool = True
@@ -125,7 +106,7 @@ class EvaluationConfig:
 
 @dataclass
 class RLConfig:
-    """전체 강화학습 설정 (모든 설정 통합)"""
+    """전체 강화학습 설정"""
     
     env: EnvironmentConfig = None
     network: NetworkConfig = None
@@ -147,40 +128,40 @@ class RLConfig:
     
     @classmethod
     def default(cls):
-        """기본 설정 반환"""
+        """V3 기본 설정 (보수적)"""
         return cls()
     
     @classmethod
     def conservative(cls):
-        """보수적인 설정 (안정적인 학습)"""
+        """매우 보수적 설정"""
         config = cls()
         config.ppo.learning_rate = 1e-4
         config.ppo.clip_epsilon = 0.1
-        config.ppo.entropy_coef = 0.001
+        config.ppo.entropy_coef = 0.01
         config.env.max_position = 0.5
+        config.env.min_hold_steps = 10  # 더 긴 홀딩
         return config
     
     @classmethod
     def aggressive(cls):
-        """공격적인 설정 (빠른 학습, 높은 리스크)"""
+        """공격적 설정"""
         config = cls()
-        config.ppo.learning_rate = 1e-3
+        config.ppo.learning_rate = 5e-4
         config.ppo.clip_epsilon = 0.3
         config.ppo.entropy_coef = 0.05
-        config.env.max_position = 2.0
+        config.env.max_position = 1.5
+        config.env.min_hold_steps = 3  # 더 짧은 홀딩
         return config
     
     @classmethod
-    def recurrent(cls):
-        """LSTM 기반 설정"""
+    def balanced(cls):
+        """균형잡힌 설정"""
         config = cls()
-        config.network.use_recurrent = True
-        config.network.lstm_hidden_dim = 256
-        config.network.lstm_num_layers = 3
+        config.ppo.entropy_coef = 0.03
+        config.env.min_hold_steps = 7
         return config
     
     def to_dict(self):
-        """딕셔너리로 변환"""
         return {
             'environment': self.env.__dict__,
             'network': self.network.__dict__,
@@ -190,9 +171,8 @@ class RLConfig:
         }
     
     def print_config(self):
-        """설정 출력"""
         print("=" * 60)
-        print("강화학습 설정")
+        print("강화학습 설정 V3 (좋은 거래 학습)")
         print("=" * 60)
         
         print("\n[환경 설정]")
@@ -222,25 +202,22 @@ class RLConfig:
 DEFAULT_CONFIG = RLConfig.default()
 CONSERVATIVE_CONFIG = RLConfig.conservative()
 AGGRESSIVE_CONFIG = RLConfig.aggressive()
-RECURRENT_CONFIG = RLConfig.recurrent()
+BALANCED_CONFIG = RLConfig.balanced()
+
+# 하위 호환성
+CURRICULUM_CONFIG = BALANCED_CONFIG
+RECURRENT_CONFIG = BALANCED_CONFIG
 
 
-# 설정 로드 함수
 def get_config(config_name: str = 'default') -> RLConfig:
-    """
-    설정 이름으로 설정 로드
-    
-    Args:
-        config_name: 'default', 'conservative', 'aggressive', 'recurrent'
-    
-    Returns:
-        RLConfig 객체
-    """
+    """설정 로드"""
     configs = {
         'default': DEFAULT_CONFIG,
         'conservative': CONSERVATIVE_CONFIG,
         'aggressive': AGGRESSIVE_CONFIG,
-        'recurrent': RECURRENT_CONFIG
+        'balanced': BALANCED_CONFIG,
+        'curriculum': BALANCED_CONFIG,
+        'recurrent': BALANCED_CONFIG,
     }
     
     if config_name not in configs:
@@ -251,9 +228,5 @@ def get_config(config_name: str = 'default') -> RLConfig:
 
 
 if __name__ == '__main__':
-    # 설정 테스트
-    print("\n기본 설정:")
+    print("\nV3 기본 설정:")
     DEFAULT_CONFIG.print_config()
-    
-    print("\n\n보수적 설정:")
-    CONSERVATIVE_CONFIG.print_config()
