@@ -122,10 +122,10 @@ def setup_world():
     #   Green↔Yellow: 0.10m ✅
     #   Blue↔Yellow : 0.40m ✅
     cube_positions = [
-        [0.50,  0.10, 0.55],   # Red    dist=0.510m
-        [0.50, -0.10, 0.55],   # Green  dist=0.510m
-        [0.50,  0.20, 0.55],   # Blue   dist=0.539m  (기존 0.70m → 해결)
-        [0.50, -0.20, 0.55],   # Yellow dist=0.539m
+        [0.45,  0.15, 0.55],   # Red    dist=0.510m
+        [0.45, -0.15, 0.55],   # Green  dist=0.510m
+        [0.55,  0.15, 0.55],   # Blue   dist=0.539m  (기존 0.70m → 해결)
+        [0.55, -0.15, 0.55],   # Yellow dist=0.539m
     ]
 
     cube_colors = [
