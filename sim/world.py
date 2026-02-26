@@ -1,4 +1,26 @@
 # sim/world.py
+"""
+World Setup v12 - ROS2 Bridge 통합
+
+[ROS2 연동 추가]
+  - RGB/Depth 카메라 토픽 퍼블리시
+  - Joint States 퍼블리시
+  - TF Tree 퍼블리시
+  - 외부 명령 수신 (stack_command)
+
+토픽 목록:
+  퍼블리시:
+    /isaac/rgb          → sensor_msgs/Image
+    /isaac/depth        → sensor_msgs/Image
+    /isaac/camera_info  → sensor_msgs/CameraInfo
+    /joint_states       → sensor_msgs/JointState
+    /tf                 → tf2_msgs/TFMessage
+
+  서브스크라이브:
+    /stack_command      → std_msgs/String
+    /target_pose        → geometry_msgs/Pose
+"""
+
 import numpy as np
 from omni.isaac.core import World
 from omni.isaac.core.objects import DynamicCuboid, FixedCuboid, GroundPlane
@@ -6,61 +28,6 @@ from omni.isaac.franka import Franka
 from pxr import UsdLux, Gf
 from omni.isaac.core.utils.stage import get_current_stage
 
-
-class SimulationWorld:
-    def __init__(self):
-        self.world = World(stage_units_in_meters=1.0)
-
-    def setup_scene(self):
-        self._add_lighting()
-        ground = GroundPlane(
-            prim_path="/World/Ground",
-            size=10.0,
-            color=np.array([0.8, 0.8, 0.8])
-        )
-        self.world.scene.add(ground)
-        pedestal = FixedCuboid(
-            prim_path="/World/Pedestal",
-            name="pedestal",
-            position=np.array([0.5, 0.0, 0.30]),
-            scale=np.array([0.2, 0.2, 0.6]),
-            color=np.array([0.6, 0.4, 0.2]),
-        )
-        self.world.scene.add(pedestal)
-        cube_height = 0.60 + 0.025
-        cube = DynamicCuboid(
-            prim_path="/World/Cube",
-            name="cube",
-            position=np.array([0.5, 0.0, cube_height]),
-            scale=np.array([0.05, 0.05, 0.05]),
-            color=np.array([1.0, 1.0, 1.0]),
-            mass=0.1,
-        )
-        self.world.scene.add(cube)
-
-    def _add_lighting(self):
-        stage = get_current_stage()
-        distant_light = UsdLux.DistantLight.Define(stage, "/World/DistantLight")
-        distant_light.CreateIntensityAttr(3000)
-        distant_light.CreateColorAttr(Gf.Vec3f(1.0, 1.0, 0.95))
-        dome_light = UsdLux.DomeLight.Define(stage, "/World/DomeLight")
-        dome_light.CreateIntensityAttr(1000)
-        dome_light.CreateColorAttr(Gf.Vec3f(1.0, 1.0, 1.0))
-
-    def get_world(self):
-        return self.world
-
-    def reset(self):
-        self.world.reset()
-        self.setup_scene()
-
-    def step(self, render=True):
-        self.world.step(render=render)
-
-
-# ============================================================
-# 메인 파일용 setup 함수
-# ============================================================
 
 def setup_world():
     print("[Setup] Creating world...")
@@ -80,8 +47,7 @@ def setup_world():
         Franka(prim_path="/World/Franka", name="franka")
     )
 
-    # 테이블 윗면 Z=0.50m, Y방향 0.8로 확장
-    table = world.scene.add(
+    world.scene.add(
         FixedCuboid(
             prim_path="/World/Table",
             name="table",
@@ -92,19 +58,12 @@ def setup_world():
     )
 
     # ── 큐브 배치 ─────────────────────────────────────────────────────
-    # [v11 수정] Blue/Yellow: X=0.60 → 0.55 (dist 0.626 → 0.579m)
-    # Franka 도달 범위 안으로 당김 → 집기 성공률 향상
-    # 큐브 간 최소 간격: 0.166m ✅
-    #
-    #   Red    (0.40,  0.25) dist=0.472m
-    #   Green  (0.40, -0.25) dist=0.472m
-    #   Blue   (0.55,  0.18) dist=0.579m  ← 0.626 → 0.579
-    #   Yellow (0.55, -0.18) dist=0.579m  ← 0.626 → 0.579
+    # Blue/Yellow: X=0.55 (Franka 도달 범위 내)
     cube_positions = [
         [0.40,  0.25, 0.526],   # Red
         [0.40, -0.25, 0.526],   # Green
-        [0.55,  0.18, 0.526],   # Blue   (수정)
-        [0.55, -0.18, 0.526],   # Yellow (수정)
+        [0.55,  0.18, 0.526],   # Blue
+        [0.55, -0.18, 0.526],   # Yellow
     ]
     cube_colors = [
         [1.0, 0.0, 0.0],
@@ -112,10 +71,10 @@ def setup_world():
         [0.0, 0.0, 1.0],
         [1.0, 1.0, 0.0],
     ]
+    color_names = ['Red', 'Green', 'Blue', 'Yellow']
 
     for i, (pos, color) in enumerate(zip(cube_positions, cube_colors)):
         dist = np.sqrt(pos[0]**2 + pos[1]**2)
-        color_name = ['Red', 'Green', 'Blue', 'Yellow'][i]
         world.scene.add(
             DynamicCuboid(
                 prim_path=f"/World/Cube_{i}",
@@ -126,40 +85,17 @@ def setup_world():
                 color=np.array(color)
             )
         )
-        print(f"  Cube_{i} ({color_name}): "
+        print(f"  Cube_{i} ({color_names[i]}): "
               f"XY=({pos[0]:.2f},{pos[1]:+.2f}) dist={dist:.3f}m")
 
-    print(f"[Setup] Added {len(cube_positions)} cubes")
-
-    # ── 카메라 (vision_control.py 내부 replicator 카메라 사용) ────────
-    # world.py에서는 Isaac Sensor Camera는 생성하지 않음
-    # vision_control.py의 _ensure_camera_ready()에서
-    # rep.create.camera()로 직접 생성 + depth annotator 포함
-    from omni.isaac.sensor import Camera
-    from scipy.spatial.transform import Rotation as R
-
-    camera = Camera(
-        prim_path="/World/Camera",
-        position=np.array([0.5, 0.0, 1.2]),
-        resolution=(1024, 768),
-        frequency=20
-    )
-    rot = R.from_euler('x', 90, degrees=True)
-    quat = rot.as_quat()
-    orientation = np.array([quat[3], quat[0], quat[1], quat[2]])
-    camera.set_world_pose(
-        position=np.array([0.5, 0.0, 1.2]),
-        orientation=orientation
-    )
-    camera.initialize()
-    print("[Setup] Camera initialized")
+    # ── ROS2 Bridge 초기화 ────────────────────────────────────────────
+    ros2_bridge = _setup_ros2_bridge()
 
     # ── 월드 리셋 ─────────────────────────────────────────────────────
     print("[Setup] Resetting world...")
     world.reset()
 
-    # ── Franka 초기 자세 (팔 위로 세워서 큐브 충돌 방지) ─────────────
-    print("[Setup] Setting Franka initial pose...")
+    # ── Franka 초기 자세 (팔 위로 → 큐브 충돌 방지) ──────────────────
     franka.set_joint_positions(
         np.array([0.0, -1.5, 0.0, -2.5, 0.0, 1.5, 0.7, 0.04, 0.04])
     )
@@ -170,7 +106,74 @@ def setup_world():
         world.step(render=True)
 
     print("[Setup] ✓ World setup complete!\n")
-    return world, franka, camera
+    return world, franka, ros2_bridge
+
+
+def _setup_ros2_bridge():
+    """
+    Isaac Sim 4.5 ROS2 Bridge 초기화
+    isaacsim.ros2.bridge 사용 (4.5부터 변경된 API)
+    """
+    print("[ROS2] Initializing ROS2 Bridge...")
+
+    try:
+        import rclpy
+        from isaacsim.ros2.bridge import ROS2Camera, ROS2JointState, ROS2TFTree
+
+        # rclpy 초기화
+        if not rclpy.ok():
+            rclpy.init()
+
+        bridge = {
+            'enabled': True,
+            'camera': None,
+            'joint_state': None,
+            'tf': None,
+        }
+
+        # ── RGB + Depth 카메라 퍼블리시 ───────────────────────────────
+        ros2_cam = ROS2Camera(
+            prim_path="/World/Camera",
+            rgb_topic="/isaac/rgb",
+            depth_topic="/isaac/depth",
+            camera_info_topic="/isaac/camera_info",
+            frame_id="camera_frame",
+            queue_size=1,
+        )
+        bridge['camera'] = ros2_cam
+        print("[ROS2] Camera topics: /isaac/rgb, /isaac/depth, /isaac/camera_info")
+
+        # ── Joint State 퍼블리시 ─────────────────────────────────────
+        ros2_js = ROS2JointState(
+            prim_path="/World/Franka",
+            topic="/joint_states",
+            frame_id="base_link",
+            queue_size=10,
+        )
+        bridge['joint_state'] = ros2_js
+        print("[ROS2] Joint state topic: /joint_states")
+
+        # ── TF Tree 퍼블리시 ─────────────────────────────────────────
+        ros2_tf = ROS2TFTree(
+            prim_paths=[
+                "/World/Franka",
+                "/World/Camera",
+            ],
+            topic="/tf",
+        )
+        bridge['tf'] = ros2_tf
+        print("[ROS2] TF topic: /tf")
+
+        print("[ROS2] ✅ ROS2 Bridge initialized!")
+        return bridge
+
+    except ImportError as e:
+        print(f"[ROS2] ⚠️  ROS2 Bridge import 실패: {e}")
+        print("[ROS2] Extension 활성화 확인: Window → Extensions → isaacsim.ros2.bridge")
+        return {'enabled': False}
+    except Exception as e:
+        print(f"[ROS2] ⚠️  ROS2 Bridge 초기화 실패: {e}")
+        return {'enabled': False}
 
 
 def _add_lights():

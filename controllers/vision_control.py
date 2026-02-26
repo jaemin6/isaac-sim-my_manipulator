@@ -1,26 +1,25 @@
 # controllers/vision_control.py
 """
-Phase 3: Vision-based Control v11
+Phase 3: Vision-based Control v12
 
-[v11 핵심 수정]
-  1. Depth annotator를 기존 replicator 카메라에 추가
-     - 기존: RGB annotator만 → 색상 감지만 가능
-     - v11: 같은 render product에 depth annotator 추가
-            → 색상 감지(4개 다 잡힘) + depth로 3D 위치 추정 동시 가능
+[v12 변경사항]
+  1. ROS2 퍼블리시 통합
+     - 큐브 감지 결과 → /isaac/cube_detections (PoseArray)
+     - 스태킹 상태   → /isaac/stack_status (String)
+     - EE 포즈       → /isaac/ee_pose (PoseStamped)
 
-  2. Depth 좌표 변환 직접 구현
-     - SimulationCamera.pixel_depth_to_world() 좌표계 불일치 문제 해결
-     - 카메라 파라미터(position, look_at, fov)를 직접 사용해 변환
+  2. ROS2 서브스크라이브
+     - /stack_command → "start" / "stop" / "reset"
+     - /target_pose   → 외부에서 place 위치 지정
 
-  3. 위치 추정 우선순위
-     1순위: Depth → 오차 < 100mm 이면 사용
-     2순위: Homography (4개 감지 시)
-     3순위: GT (RigidPrim 실시간)
+  3. j5 원상복구 (0.0 고정)
+     - j5 동적 계산이 오히려 큐브 날아가는 현상 유발
 
-[v10 유지]
-  - calibrated 강제 통과 (GT fallback 보장)
-  - j1 동적 계산, GRASP_DELTA_J3=-0.55
-  - STACK_HOVER_POSES, PLACE_SETTLE, DETACH_WAIT
+[v11 유지]
+  - RGB+Depth replicator 카메라
+  - sensor_w=20.955 (Depth 정확도)
+  - Homography → GT fallback
+  - Blue/Yellow dist=0.579m
 """
 
 import numpy as np
@@ -62,18 +61,16 @@ TABLE_TOP_Z  = 0.50
 CUBE_SCALE   = 0.05
 CUBE_HALF    = 0.025
 CUBE_REST_Z  = TABLE_TOP_Z + CUBE_HALF   # 0.525m
-
-# Depth 신뢰 임계값
-DEPTH_TRUST_MM = 100.0   # mm
+DEPTH_TRUST_MM = 100.0
 
 # ------------------------------------------------------------------ #
-#  카메라 파라미터 (replicator 카메라 기준)
+#  카메라 파라미터
 # ------------------------------------------------------------------ #
 CAM_POSITION  = np.array([1.0, 0.0, 1.5])
 CAM_LOOK_AT   = np.array([0.5, 0.0, 0.0])
 CAM_RES_W     = 1024
 CAM_RES_H     = 768
-CAM_FOCAL_LEN = 12.0   # rep.create.camera focal_length
+CAM_FOCAL_LEN = 12.0
 
 # ------------------------------------------------------------------ #
 #  공통 포즈
@@ -118,25 +115,30 @@ PLACE_SETTLE_FRAMES      = 40
 # ------------------------------------------------------------------ #
 GRASP_PRE_J3   = -1.9
 GRASP_DELTA_J3 = -0.55
-
-J1_BASE     = -0.45
-J1_DIST_REF = 0.50
-J1_GAIN     = 0.60
+J1_BASE        = -0.45
+J1_DIST_REF    = 0.50
+J1_GAIN        = 0.60
 
 
 def _calc_j1(dist_xy):
-    j1 = J1_BASE + (dist_xy - J1_DIST_REF) * J1_GAIN
-    return float(np.clip(j1, -0.8, -0.2))
+    return float(np.clip(
+        J1_BASE + (dist_xy - J1_DIST_REF) * J1_GAIN, -0.8, -0.2))
 
 
 class VisionController:
-    def __init__(self, franka, world, camera):
-        self.franka     = franka
-        self.world      = world
-        self.camera     = camera   # 기존 Isaac Sensor Camera (호환용)
-        self.controller = franka.get_articulation_controller()
-        self.app        = omni.kit.app.get_app()
-        self.timeline   = omni.timeline.get_timeline_interface()
+    def __init__(self, franka, world, ros2_bridge=None):
+        """
+        Args:
+            franka     : Franka 로봇 인스턴스
+            world      : Isaac Sim World
+            ros2_bridge: setup_world()에서 반환된 ROS2 bridge dict
+        """
+        self.franka      = franka
+        self.world       = world
+        self.ros2_bridge = ros2_bridge or {'enabled': False}
+        self.controller  = franka.get_articulation_controller()
+        self.app         = omni.kit.app.get_app()
+        self.timeline    = omni.timeline.get_timeline_interface()
 
         self.state              = STATE_IDLE
         self.step_count         = 0
@@ -144,6 +146,8 @@ class VisionController:
         self.current_cube_index = None
         self.cube_attached      = False
         self._stable_count      = 0
+        self._external_command  = None   # ROS2에서 받은 명령
+        self._external_target   = None   # ROS2에서 받은 place 위치
 
         self.performance = {
             'grasp_times':      [],
@@ -153,20 +157,174 @@ class VisionController:
             'gt_fallback':      0,
         }
 
-        self.homography_matrix  = None
-        self.calibrated         = False
+        self.homography_matrix = None
+        self.calibrated        = False
+        self._rep_ready        = False
+        self.rgb_annot         = None
+        self.depth_annot       = None
 
-        # replicator 카메라 (RGB + Depth 동시)
-        self._rep_ready    = False
-        self.rgb_annot     = None
-        self.depth_annot   = None
+        # ROS2 퍼블리셔/서브스크라이버
+        self._ros2_pub  = {}
+        self._ros2_sub  = {}
+        self._ros2_node = None
 
-        print(f"[VisionController v11]")
-        print(f"  큐브 안착 Z   = {CUBE_REST_Z:.3f}m")
-        print(f"  Depth 신뢰    = {DEPTH_TRUST_MM:.0f}mm 이내")
+        self._init_ros2_comms()
+
+        print(f"[VisionController v12]")
+        print(f"  큐브 안착 Z  = {CUBE_REST_Z:.3f}m")
+        print(f"  Depth 신뢰   = {DEPTH_TRUST_MM:.0f}mm")
+        ros2_str = "✅ 활성화" if self.ros2_bridge.get('enabled') else "⚠️  비활성화"
+        print(f"  ROS2 Bridge  = {ros2_str}")
 
     # ------------------------------------------------------------------ #
-    #  [v11] replicator 카메라 초기화 - RGB + Depth 동시
+    #  [v12] ROS2 통신 초기화
+    # ------------------------------------------------------------------ #
+
+    def _init_ros2_comms(self):
+        """ROS2 퍼블리셔/서브스크라이버 초기화"""
+        if not self.ros2_bridge.get('enabled'):
+            print("[ROS2] Bridge 비활성화 → ROS2 통신 스킵")
+            return
+
+        try:
+            import rclpy
+            from rclpy.node import Node
+            from geometry_msgs.msg import PoseArray, Pose, PoseStamped
+            from std_msgs.msg import String
+
+            # ROS2 노드 생성
+            self._ros2_node = rclpy.create_node('isaac_vision_controller')
+
+            # ── 퍼블리셔 ─────────────────────────────────────────────
+            # 큐브 감지 결과
+            self._ros2_pub['cube_detections'] = self._ros2_node.create_publisher(
+                PoseArray, '/isaac/cube_detections', 10)
+
+            # 스태킹 상태 문자열
+            self._ros2_pub['stack_status'] = self._ros2_node.create_publisher(
+                String, '/isaac/stack_status', 10)
+
+            # EE 현재 포즈
+            self._ros2_pub['ee_pose'] = self._ros2_node.create_publisher(
+                PoseStamped, '/isaac/ee_pose', 10)
+
+            # ── 서브스크라이버 ───────────────────────────────────────
+            # 외부 스태킹 명령 ("start" / "stop" / "reset")
+            self._ros2_sub['stack_command'] = self._ros2_node.create_subscription(
+                String,
+                '/stack_command',
+                self._on_stack_command,
+                10
+            )
+
+            # 외부 place 위치 지정
+            self._ros2_sub['target_pose'] = self._ros2_node.create_subscription(
+                Pose,
+                '/target_pose',
+                self._on_target_pose,
+                10
+            )
+
+            print("[ROS2] ✅ Publishers/Subscribers initialized")
+            print("  Pub: /isaac/cube_detections, /isaac/stack_status, /isaac/ee_pose")
+            print("  Sub: /stack_command, /target_pose")
+
+        except Exception as e:
+            print(f"[ROS2] 통신 초기화 실패: {e}")
+            self.ros2_bridge['enabled'] = False
+
+    # ── ROS2 콜백 ─────────────────────────────────────────────────────
+
+    def _on_stack_command(self, msg):
+        """
+        /stack_command 토픽 수신 콜백
+        msg.data: "start" / "stop" / "reset"
+        """
+        cmd = msg.data.strip().lower()
+        print(f"[ROS2] ← stack_command: '{cmd}'")
+        self._external_command = cmd
+
+    def _on_target_pose(self, msg):
+        """
+        /target_pose 토픽 수신 콜백
+        외부에서 place 위치를 지정
+        """
+        pos = np.array([msg.position.x, msg.position.y, msg.position.z])
+        print(f"[ROS2] ← target_pose: ({pos[0]:.3f}, {pos[1]:.3f}, {pos[2]:.3f})")
+        self._external_target = pos
+
+    # ── ROS2 퍼블리시 헬퍼 ────────────────────────────────────────────
+
+    def _publish_cube_detections(self, detected):
+        """감지된 큐브 위치를 PoseArray로 퍼블리시"""
+        if not self.ros2_bridge.get('enabled'):
+            return
+        try:
+            from geometry_msgs.msg import PoseArray, Pose
+            from std_msgs.msg import Header
+            import builtin_interfaces.msg
+
+            msg = PoseArray()
+            msg.header.frame_id = "world"
+
+            for cube in detected:
+                p = cube['position']
+                pose = Pose()
+                pose.position.x = float(p[0])
+                pose.position.y = float(p[1])
+                pose.position.z = float(p[2])
+                pose.orientation.w = 1.0
+                msg.poses.append(pose)
+
+            self._ros2_pub['cube_detections'].publish(msg)
+        except Exception as e:
+            print(f"[ROS2] cube_detections 퍼블리시 실패: {e}")
+
+    def _publish_stack_status(self, status_str):
+        """스태킹 상태 퍼블리시"""
+        if not self.ros2_bridge.get('enabled'):
+            return
+        try:
+            from std_msgs.msg import String
+            msg = String()
+            msg.data = status_str
+            self._ros2_pub['stack_status'].publish(msg)
+            print(f"[ROS2] → stack_status: '{status_str}'")
+        except Exception as e:
+            print(f"[ROS2] stack_status 퍼블리시 실패: {e}")
+
+    def _publish_ee_pose(self):
+        """EE 현재 포즈 퍼블리시"""
+        if not self.ros2_bridge.get('enabled'):
+            return
+        try:
+            from geometry_msgs.msg import PoseStamped
+            ee_pos, ee_ori = self.franka.get_ee_pose()
+            msg = PoseStamped()
+            msg.header.frame_id = "world"
+            msg.pose.position.x = float(ee_pos[0])
+            msg.pose.position.y = float(ee_pos[1])
+            msg.pose.position.z = float(ee_pos[2])
+            msg.pose.orientation.w = float(ee_ori[0])
+            msg.pose.orientation.x = float(ee_ori[1])
+            msg.pose.orientation.y = float(ee_ori[2])
+            msg.pose.orientation.z = float(ee_ori[3])
+            self._ros2_pub['ee_pose'].publish(msg)
+        except Exception as e:
+            pass  # EE pose는 매 프레임 퍼블리시, 에러 로그 생략
+
+    def _spin_ros2(self):
+        """ROS2 콜백 처리 (non-blocking)"""
+        if not self.ros2_bridge.get('enabled') or self._ros2_node is None:
+            return
+        try:
+            import rclpy
+            rclpy.spin_once(self._ros2_node, timeout_sec=0)
+        except Exception:
+            pass
+
+    # ------------------------------------------------------------------ #
+    #  replicator 카메라 초기화
     # ------------------------------------------------------------------ #
 
     def _ensure_camera_ready(self):
@@ -181,14 +339,11 @@ class VisionController:
         )
         rp = rep.create.render_product(rep_cam, (CAM_RES_W, CAM_RES_H))
 
-        # RGB annotator
         self.rgb_annot = rep.AnnotatorRegistry.get_annotator("rgb")
         self.rgb_annot.attach([rp])
 
-        # [v11] Depth annotator - 같은 render product에 추가
         self.depth_annot = rep.AnnotatorRegistry.get_annotator(
-            "distance_to_camera"
-        )
+            "distance_to_camera")
         self.depth_annot.attach([rp])
 
         self._rep_ready = True
@@ -199,7 +354,6 @@ class VisionController:
     # ------------------------------------------------------------------ #
 
     def _get_frames(self):
-        """RGB + Depth 동시 취득"""
         self._ensure_camera_ready()
 
         for _ in range(5):
@@ -207,13 +361,11 @@ class VisionController:
             self.app.update()
 
         if not self.timeline.is_playing():
-            print("[Vision] ⚠️  Timeline stopped, restarting...")
             self.timeline.play()
             for _ in range(10):
                 self.world.step(render=True)
                 self.app.update()
 
-        # RGB
         rgb_data = self.rgb_annot.get_data()
         rgb = None
         if rgb_data is not None and len(rgb_data) > 0:
@@ -223,7 +375,6 @@ class VisionController:
             if rgb.dtype != np.uint8:
                 rgb = (np.clip(rgb, 0, 1) * 255).astype(np.uint8)
 
-        # Depth
         depth_data = self.depth_annot.get_data()
         depth = None
         if depth_data is not None and len(depth_data) > 0:
@@ -240,23 +391,16 @@ class VisionController:
         return cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
 
     # ------------------------------------------------------------------ #
-    #  [v11] Depth 기반 3D 위치 변환
-    #  카메라 position/look_at으로 직접 회전행렬 계산
+    #  Depth 기반 3D 위치 변환
     # ------------------------------------------------------------------ #
 
     def _depth_pixel_to_world(self, u, v, depth_map):
-        """
-        replicator 카메라 파라미터 기반 픽셀→world 변환.
-        CAM_POSITION, CAM_LOOK_AT, CAM_FOCAL_LEN 사용.
-        """
         if depth_map is None:
             return None
         try:
             h, w = depth_map.shape[:2]
             u_c = int(np.clip(u, 0, w - 1))
             v_c = int(np.clip(v, 0, h - 1))
-
-            # 주변 3x3 median으로 노이즈 제거
             u0 = max(0, u_c-1); u1 = min(w, u_c+2)
             v0 = max(0, v_c-1); v1 = min(h, v_c+2)
             d = float(np.median(depth_map[v0:v1, u0:u1]))
@@ -264,40 +408,27 @@ class VisionController:
             if not (0.05 < d < 5.0):
                 return None
 
-            # 카메라 내부 파라미터 (pinhole 근사)
-            # focal_length(mm) → pixel: Isaac Sim은 sensor_size 36mm 기준
-            sensor_w = 36.0
+            sensor_w = 20.955
             fx = (CAM_FOCAL_LEN / sensor_w) * CAM_RES_W
             fy = (CAM_FOCAL_LEN / sensor_w) * CAM_RES_H
             cx = CAM_RES_W / 2.0
             cy = CAM_RES_H / 2.0
 
-            # 카메라 좌표계 (OpenCV: X오른쪽, Y아래, Z앞)
             x_cam = (u_c - cx) * d / fx
             y_cam = (v_c - cy) * d / fy
             z_cam = d
 
-            # 카메라→월드 회전행렬
             forward = CAM_LOOK_AT - CAM_POSITION
             forward = forward / np.linalg.norm(forward)
-
             world_up = np.array([0.0, 0.0, 1.0])
             right = np.cross(world_up, forward)
-            if np.linalg.norm(right) < 1e-6:
-                right = np.array([1.0, 0.0, 0.0])
-            else:
-                right = right / np.linalg.norm(right)
-
+            right = right / np.linalg.norm(right)
             up = np.cross(forward, right)
             up = up / np.linalg.norm(up)
 
-            # 카메라 좌표 → 월드 좌표
-            # Isaac Sim replicator: X=right, Y=up(반전), Z=forward
-            point_cam = np.array([x_cam, -y_cam, z_cam])
-            R_mat = np.column_stack([right, up, forward])
+            point_cam  = np.array([x_cam, -y_cam, z_cam])
+            R_mat      = np.column_stack([right, up, forward])
             point_world = CAM_POSITION + R_mat @ point_cam
-
-            # Z는 큐브 안착 높이로 고정
             point_world[2] = CUBE_REST_Z
             return point_world
 
@@ -318,12 +449,8 @@ class VisionController:
             return None
 
     def _best_position(self, u, v, depth_map, cube_index):
-        """
-        우선순위: Depth → Homography → GT
-        """
         gt = get_cube_position(cube_index)
 
-        # 1순위: Depth
         pos_d = self._depth_pixel_to_world(u, v, depth_map)
         if pos_d is not None and gt is not None:
             err_mm = np.linalg.norm(pos_d[:2] - gt[:2]) * 1000
@@ -334,14 +461,12 @@ class VisionController:
                 print(f"[Vision] Depth 오차 {err_mm:.0f}mm > "
                       f"{DEPTH_TRUST_MM:.0f}mm → Homography 시도")
 
-        # 2순위: Homography
         pos_h = self._pixel_to_world_homography(u, v)
         if pos_h is not None and gt is not None:
             err_mm = np.linalg.norm(pos_h[:2] - gt[:2]) * 1000
             if err_mm < DEPTH_TRUST_MM:
                 return pos_h, 'homography', err_mm / 1000
 
-        # 3순위: GT
         if gt is not None:
             self.performance['gt_fallback'] += 1
             return gt, 'gt', 0.0
@@ -359,7 +484,7 @@ class VisionController:
 
         rgb, depth = self._get_frames()
         if rgb is None:
-            print("[Vision] 카메라 실패 → GT 모드로 진행")
+            print("[Vision] 카메라 실패 → GT 모드")
             self.calibrated = True
             return True
 
@@ -375,7 +500,8 @@ class VisionController:
             mask = self._get_color_mask(hsv, color_name)
             cnts = cv2.findContours(
                 mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)[0]
-            if not cnts or cv2.contourArea(max(cnts, key=cv2.contourArea)) < 300:
+            if not cnts or cv2.contourArea(
+                    max(cnts, key=cv2.contourArea)) < 300:
                 print(f"  {color_name} (Cube_{cube_idx}): 미감지")
                 continue
 
@@ -406,10 +532,10 @@ class VisionController:
             status = "완료" if self.homography_matrix is not None else "실패"
             print(f"[Calibration] Homography {status}")
         else:
-            print(f"[Calibration] 감지 {len(pixel_pts)}개 "
-                  f"(4개 필요, Homography 생략)")
+            print(f"[Calibration] 감지 {len(pixel_pts)}개 → Homography 생략")
 
         self.calibrated = True
+        self._publish_stack_status("calibrated")
         print("[Calibration] ✅ calibrated=True")
         print("="*60 + "\n")
         return True
@@ -435,7 +561,8 @@ class VisionController:
             cnts       = cv2.findContours(
                 mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)[0]
 
-            if not cnts or cv2.contourArea(max(cnts, key=cv2.contourArea)) < 100:
+            if not cnts or cv2.contourArea(
+                    max(cnts, key=cv2.contourArea)) < 100:
                 gt = get_cube_position(i)
                 if gt is not None:
                     detected.append({
@@ -461,15 +588,18 @@ class VisionController:
 
         print(f"[Vision] Detected {len(detected)} cubes:")
         for cube in detected:
-            p   = cube['position']
-            pix = cube['pixel_pos']
-            m   = cube['method']
-            err = cube['detection_error']
+            p       = cube['position']
+            pix     = cube['pixel_pos']
+            m       = cube['method']
+            err     = cube['detection_error']
             pix_str = f"({pix[0]},{pix[1]})" if pix else "N/A"
             print(f"  {cube['color']} (Cube_{cube['index']}): "
                   f"Pixel={pix_str} | "
                   f"Pos=({p[0]:.3f},{p[1]:.3f},{p[2]:.3f}) | "
                   f"[{m}] Err={err*1000:.1f}mm")
+
+        # ROS2 퍼블리시
+        self._publish_cube_detections(detected)
 
         return detected
 
@@ -512,6 +642,37 @@ class VisionController:
         res = np.zeros(9)
         res[:7] = jv[:7]
         return res
+
+    # ------------------------------------------------------------------ #
+    #  [v12] 외부 명령 처리
+    # ------------------------------------------------------------------ #
+
+    def process_external_commands(self):
+        """
+        ROS2에서 받은 명령 처리.
+        main loop에서 매 프레임 호출.
+        """
+        self._spin_ros2()
+
+        if self._external_command is None:
+            return
+
+        cmd = self._external_command
+        self._external_command = None
+
+        if cmd == "stop":
+            print("[ROS2] 명령: STOP")
+            self.state      = STATE_IDLE
+            self.step_count = 0
+            self._publish_stack_status("stopped")
+
+        elif cmd == "reset":
+            print("[ROS2] 명령: RESET")
+            self.state              = STATE_IDLE
+            self.step_count         = 0
+            self.cube_attached      = False
+            self.current_cube_index = None
+            self._publish_stack_status("reset")
 
     # ------------------------------------------------------------------ #
     #  Grasp 시작
@@ -562,6 +723,7 @@ class VisionController:
         self._transit_pose = TRANSIT_POSE.copy()
         self._transit_pose[0] = angle
 
+        # [v12] j5=0.0 고정 (v11로 복구)
         self._pre_grasp_pose = np.array(
             [angle, j1_grasp, 0.0, GRASP_PRE_J3, 0.0, 1.8, 0.8, 0.04, 0.04])
 
@@ -575,6 +737,8 @@ class VisionController:
         print(f"[Vision] j3: pre={self._pre_grasp_pose[3]:.3f}, "
               f"grasp={self._grasp_pose[3]:.3f}")
 
+        self._publish_stack_status(
+            f"grasping_cube_{self.current_cube_index}")
         self.start_time    = time.time()
         self.step_count    = 0
         self._stable_count = 0
@@ -593,6 +757,12 @@ class VisionController:
             print(f"[Vision] Busy: {self.state}")
             return False
 
+        # ROS2 외부 target_pose 우선 사용
+        if self._external_target is not None:
+            print(f"[ROS2] 외부 target_pose 사용: {self._external_target}")
+            target_pos          = self._external_target
+            self._external_target = None
+
         print("\n[Vision] Starting place...")
         angle = np.arctan2(target_pos[1], target_pos[0])
 
@@ -604,7 +774,8 @@ class VisionController:
         place_pose[3] += STACK_PLACE_DELTA_J3
 
         target_z = TABLE_TOP_Z + CUBE_SCALE * (stack_index + 0.5)
-        print(f"[Vision] Stack={stack_index} | Layer={layer} | angle={angle:.3f}")
+        print(f"[Vision] Stack={stack_index} | Layer={layer} | "
+              f"angle={angle:.3f}")
         print(f"[Vision] 목표 Z={target_z:.4f}m | "
               f"Hover j3={hover_pose[3]:.3f}, Place j3={place_pose[3]:.3f}")
 
@@ -613,6 +784,7 @@ class VisionController:
         self._hover_pose   = hover_pose
         self._place_pose   = place_pose
 
+        self._publish_stack_status(f"placing_layer_{stack_index}")
         self.start_time    = time.time()
         self.step_count    = 0
         self._stable_count = 0
@@ -628,7 +800,14 @@ class VisionController:
 
     def update(self):
         if self.state == STATE_IDLE:
+            self._publish_ee_pose()
             return
+
+        # ROS2 명령 처리 (매 프레임)
+        self.process_external_commands()
+
+        # EE 포즈 퍼블리시 (매 프레임)
+        self._publish_ee_pose()
 
         curr_joints = self._get_current_joint_positions()
 
@@ -650,7 +829,8 @@ class VisionController:
             if self.step_count >= 120:
                 self.step_count = 0
                 self.state = (STATE_PRE_GRASP
-                              if not self.cube_attached else STATE_PLACE_HOVER)
+                              if not self.cube_attached
+                              else STATE_PLACE_HOVER)
 
         elif self.state == STATE_PRE_GRASP:
             if self.step_count == 0:
@@ -793,6 +973,7 @@ class VisionController:
                 elapsed = time.time() - self.start_time
                 self.performance['place_times'].append(elapsed)
                 print(f"[Phase 3] ✓ Place complete ({elapsed:.2f}s)")
+                self._publish_stack_status("idle")
                 self.step_count = 0
                 self.state = STATE_IDLE
 
@@ -839,3 +1020,12 @@ class VisionController:
                   f"{summary['avg_detection_error']*1000:.2f} mm "
                   f"± {summary['std_detection_error']*1000:.2f} mm")
         print(f"{'='*60}\n")
+
+    def shutdown(self):
+        """종료 시 ROS2 노드 정리"""
+        if self._ros2_node is not None:
+            try:
+                self._ros2_node.destroy_node()
+                print("[ROS2] Node destroyed")
+            except Exception:
+                pass
