@@ -111,15 +111,15 @@ def setup_world():
 
 def _setup_ros2_bridge():
     """
-    Isaac Sim 4.5 ROS2 Bridge 초기화
-    isaacsim.ros2.bridge 사용 (4.5부터 변경된 API)
+    Isaac Sim 최신 버전 호환 ROS2 Bridge 초기화
     """
     print("[ROS2] Initializing ROS2 Bridge...")
 
     try:
         import rclpy
-        from isaacsim.ros2.bridge import ROS2Camera, ROS2JointState, ROS2TFTree
-
+        # [수정] 버전 호환성을 위해 모듈 자체를 먼저 가져옵니다.
+        import isaacsim.ros2.bridge as bridge_mod
+        
         # rclpy 초기화
         if not rclpy.ok():
             rclpy.init()
@@ -131,45 +131,63 @@ def _setup_ros2_bridge():
             'tf': None,
         }
 
-        # ── RGB + Depth 카메라 퍼블리시 ───────────────────────────────
-        ros2_cam = ROS2Camera(
-            prim_path="/World/Camera",
-            rgb_topic="/isaac/rgb",
-            depth_topic="/isaac/depth",
-            camera_info_topic="/isaac/camera_info",
-            frame_id="camera_frame",
-            queue_size=1,
-        )
-        bridge['camera'] = ros2_cam
-        print("[ROS2] Camera topics: /isaac/rgb, /isaac/depth, /isaac/camera_info")
+        # [핵심 수정] 버전별 클래스 이름 대응 (ROS2Camera -> Ros2Camera 등)
+        # hasattr를 사용해 실제 존재하는 이름을 찾습니다.
+        def get_bridge_class(class_name):
+            # 1. 원래 이름 시도 (ROS2Camera)
+            if hasattr(bridge_mod, class_name):
+                return getattr(bridge_mod, class_name)
+            # 2. 첫글자만 대문자인 이름 시도 (Ros2Camera)
+            alt_name = class_name.capitalize().replace("Ros2", "Ros2") 
+            if hasattr(bridge_mod, alt_name):
+                return getattr(bridge_mod, alt_name)
+            # 3. 아예 다른 명칭(Ros2Bridge) 시도
+            if class_name == "ROS2Camera" and hasattr(bridge_mod, "Ros2Camera"):
+                return getattr(bridge_mod, "Ros2Camera")
+            return None
 
-        # ── Joint State 퍼블리시 ─────────────────────────────────────
-        ros2_js = ROS2JointState(
-            prim_path="/World/Franka",
-            topic="/joint_states",
-            frame_id="base_link",
-            queue_size=10,
-        )
-        bridge['joint_state'] = ros2_js
-        print("[ROS2] Joint state topic: /joint_states")
+        # 클래스 매핑 시도
+        CameraClass = get_bridge_class("ROS2Camera")
+        JointStateClass = get_bridge_class("ROS2JointState")
+        TFTreeClass = get_bridge_class("ROS2TFTree")
 
-        # ── TF Tree 퍼블리시 ─────────────────────────────────────────
-        ros2_tf = ROS2TFTree(
-            prim_paths=[
-                "/World/Franka",
-                "/World/Camera",
-            ],
-            topic="/tf",
-        )
-        bridge['tf'] = ros2_tf
-        print("[ROS2] TF topic: /tf")
+        # ── RGB + Depth 카메라 ───────────────────────────────
+        if CameraClass:
+            bridge['camera'] = CameraClass(
+                prim_path="/World/Camera",
+                rgb_topic="/isaac/rgb",
+                depth_topic="/isaac/depth",
+                camera_info_topic="/isaac/camera_info",
+                frame_id="camera_frame",
+                queue_size=1,
+            )
+            print("[ROS2] Camera topics: /isaac/rgb, /isaac/depth")
+        else:
+            print("[ROS2] ⚠️ Camera 클래스를 찾을 수 없습니다. 스킵합니다.")
+
+        # ── Joint State ─────────────────────────────────────
+        if JointStateClass:
+            bridge['joint_state'] = JointStateClass(
+                prim_path="/World/Franka",
+                topic="/joint_states",
+                frame_id="base_link",
+                queue_size=10,
+            )
+            print("[ROS2] Joint state topic: /joint_states")
+
+        # ── TF Tree ─────────────────────────────────────────
+        if TFTreeClass:
+            bridge['tf'] = TFTreeClass(
+                prim_paths=["/World/Franka", "/World/Camera"],
+                topic="/tf",
+            )
+            print("[ROS2] TF topic: /tf")
 
         print("[ROS2] ✅ ROS2 Bridge initialized!")
         return bridge
 
     except ImportError as e:
         print(f"[ROS2] ⚠️  ROS2 Bridge import 실패: {e}")
-        print("[ROS2] Extension 활성화 확인: Window → Extensions → isaacsim.ros2.bridge")
         return {'enabled': False}
     except Exception as e:
         print(f"[ROS2] ⚠️  ROS2 Bridge 초기화 실패: {e}")
