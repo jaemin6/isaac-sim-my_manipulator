@@ -34,3 +34,9 @@ __pycache__/
 .venv/
 venv/
 env/
+
+
+# YOLO 데이터셋
+yolo/dataset/
+yolo/runs/
+yolo/_tmp_writer/
