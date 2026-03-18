@@ -82,7 +82,8 @@ my_manipulator/
 ### ✔️ 목표
 - 자동 데이터셋 생성
 - semantic segmentation → YOLO 라벨 변환
-![test_result](https://github.com/user-attachments/assets/81ad0a09-c544-43c0-8a72-32295ce6a728)
+![yolo_test](https://github.com/user-attachments/assets/66915076-5a7f-4f98-b817-e95055ab18e1)
+
 
 ### 🔧 실행 방법
 
