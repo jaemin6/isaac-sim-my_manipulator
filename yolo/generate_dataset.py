@@ -22,7 +22,7 @@ from omni.isaac.core import World
 from omni.isaac.core.objects import DynamicCuboid, FixedCuboid, GroundPlane
 from omni.isaac.core.utils.semantics import add_update_semantics
 from omni.isaac.core.utils.stage import get_current_stage
-from pxr import UsdShade, Sdf, Gf
+from pxr import UsdShade, Sdf, Gf, UsdLux
 
 # ── 설정 ──────────────────────────────────────────────────────────────
 OUTPUT_DIR   = Path(__file__).parent / "dataset"
@@ -56,9 +56,11 @@ def make_dirs():
 
 
 def setup_scene():
-    """vision_control.py / world.py 패턴으로 씬 구성"""
-    world = World()
+    """vision_control.py / world.py 패턴으로 씬 구성 및 조명/시맨틱 해결"""
+    world = World(stage_units_in_meters=1.0)
+    stage = get_current_stage() # <--- 조명 설정을 위해 반드시 필요합니다.
 
+    # 1. 바닥 및 테이블 생성
     world.scene.add(GroundPlane("/World/Ground", z_position=0))
     world.scene.add(FixedCuboid(
         prim_path="/World/Table", name="table",
@@ -67,30 +69,39 @@ def setup_scene():
         color=np.array([0.6, 0.4, 0.2])
     ))
 
-    # 큐브 생성
+    # 2. 조명 추가 (DistantLight: 태양광 역할)
+    dnl = UsdLux.DistantLight.Define(stage, "/World/DistantLight")
+    dnl.CreateIntensityAttr(2500) # 조금 더 밝게 2500 추천
+    dnl.AddRotateXYZOp().Set((300, 30, 0)) # 비스듬히 비추기
+
+    # 3. 환경광 추가 (DomeLight: 그림자 부분을 밝혀줌 - 검은 화면 방지 핵심)
+    dome = UsdLux.DomeLight.Define(stage, "/World/DomeLight")
+    dome.CreateIntensityAttr(1000)
+
+    # 4. 큐브 생성
     cube_prims = {}
     for i, (color_name, color) in enumerate(CUBE_COLORS.items()):
         prim_path = f"/World/Cube_{color_name}"
         world.scene.add(DynamicCuboid(
             prim_path=prim_path,
             name=f"cube_{color_name}",
-            position=np.array([0.4 + i * 0.1, 0.0, TABLE_Z]),
+            position=np.array([0.4 + i * 0.1, 0.0, 0.51]), # TABLE_Z 대신 명시적 높이 사용
             scale=np.array([0.05, 0.05, 0.05]),
             color=color,
             mass=0.1,
         ))
         cube_prims[color_name] = prim_path
 
+    # 월드 초기화
     world.reset()
 
-    # 시맨틱 라벨 부착 (reset 후에 붙여야 안정적)
-    stage = get_current_stage()
+    # 5. 시맨틱 라벨 부착 (reset 후에 붙여야 시뮬레이션 중 유실되지 않습니다)
     for color_name, prim_path in cube_prims.items():
         prim = stage.GetPrimAtPath(prim_path)
         add_update_semantics(prim, color_name)
         print(f"[Scene] semantic: {color_name} → {prim_path}")
 
-    # 안정화 (vision_control.py처럼 충분히)
+    # 6. 충분한 안정화 (RTX 렌더러 워밍업 포함)
     print("[Scene] Stabilizing (120 frames)...")
     for _ in range(120):
         world.step(render=True)
