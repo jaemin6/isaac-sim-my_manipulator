@@ -19,15 +19,29 @@ Isaac Sim 환경에서 Franka 로봇을 이용하여
 
 ```
 my_manipulator/
-├── main.py                  # 전체 실행 루프
+├── main.py                  # 메인 실행 (Phase 기반 제어)
 ├── sim/
-│   └── world.py             # 월드 & 로봇 & ROS2 Bridge
+│   └── world.py             # 시뮬레이션 환경 + ROS2 Bridge
+├── controllers/
+│   └── unified_controller.py # 전체 제어 로직 (Phase 관리)
+│
 ├── vision/
-│   └── detector.py          # 간단 객체 검출 (HSV 기반)
-├── utils/
-│   └── cube_utils.py        # 큐브 위치 & attach/detach
+│   └── detector.py          # 객체 인식 (HSV / YOLO)
 ├── yolo/
 │   └── generate_dataset.py  # 데이터셋 생성
+│
+├── utils/
+│   └── cube_utils.py        # 큐브 위치 / attach / detach
+│
+├── data_collection/         # 데이터 수집 관련
+├── config/                  # 설정 파일
+├── rl/                      # 강화학습 관련 코드
+├── train_rl.py              # RL 학습
+├── test_rl.py               # RL 테스트
+│
+├── camera_debug.py          # 카메라 디버깅
+├── img/                     # 결과 이미지
+└── readme.md
 ```
 
 ---
@@ -98,6 +112,7 @@ dataset/
 ---
 
 # 🤖 Phase 3: YOLO 학습 & Detection
+![output](https://github.com/user-attachments/assets/c220dd08-12ea-4e4e-a285-2a98c0cb73df)
 
 ### ✔️ 목표
 - 생성된 데이터로 YOLO 학습
@@ -129,7 +144,7 @@ RGB → HSV → Threshold → Contour → Bounding Box
 ---
 
 # 🎯 Phase 4: Grasp & Manipulation
-![output](https://github.com/user-attachments/assets/aabf0fe6-a3d3-476d-95af-164577467631)
+
 
 ### ✔️ 목표
 - 인식된 객체를 Franka가 집기
