@@ -129,6 +129,7 @@ RGB → HSV → Threshold → Contour → Bounding Box
 ---
 
 # 🎯 Phase 4: Grasp & Manipulation
+![output](https://github.com/user-attachments/assets/aabf0fe6-a3d3-476d-95af-164577467631)
 
 ### ✔️ 목표
 - 인식된 객체를 Franka가 집기
