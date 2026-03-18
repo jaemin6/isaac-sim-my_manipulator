@@ -26,6 +26,7 @@ import numpy as np
 import time
 import cv2
 import struct
+from ultralytics import YOLO
 import omni.kit.app
 import omni.timeline
 import omni.replicator.core as rep
@@ -58,7 +59,7 @@ TABLE_TOP_Z    = 0.50
 CUBE_SCALE     = 0.05
 CUBE_HALF      = 0.025
 CUBE_REST_Z    = TABLE_TOP_Z + CUBE_HALF   # 0.525m
-DEPTH_TRUST_MM = 100.0
+DEPTH_TRUST_MM = 50.0
 
 # ── 카메라 파라미터 ───────────────────────────────────────────────────
 CAM_POSITION  = np.array([1.0, 0.0, 1.5])
@@ -70,6 +71,9 @@ CAM_FOCAL_LEN = 12.0
 # ── 공통 포즈 ─────────────────────────────────────────────────────────
 HOME_POSE    = np.array([0.0, -1.2, 0.0, -1.2, 0.0, 1.6, 0.7, 0.04, 0.04])
 TRANSIT_POSE = np.array([0.0, -0.6, 0.0, -1.5, 0.0, 1.8, 0.8, 0.04, 0.04])
+
+# ── YOLO 모델
+YOLO_MODEL_PATH = "/home/jemini/isaac-sim/standalone_examples/my_manipulator/yolo/runs/cubes_v1/weights/best.pt"
 
 # ── 색상 범위 (HSV) ───────────────────────────────────────────────────
 COLOR_ORDER = ['red', 'green', 'blue', 'yellow']
@@ -111,18 +115,21 @@ def _calc_j1(dist_xy):
 
 
 def _build_cam_rotation(cam_pos, look_at):
-    """카메라 회전 행렬 [right | up | forward] 계산"""
+    """
+    카메라 회전 행렬 계산
+    Isaac Sim 카메라: X=right, Y=up, Z=backward (OpenGL 방식)
+    """
     forward  = look_at - cam_pos
     forward  = forward / np.linalg.norm(forward)
     world_up = np.array([0.0, 0.0, 1.0])
-    right    = np.cross(world_up, forward)
+    right    = np.cross(forward, world_up)   # ← 순서 변경: forward × up
     if np.linalg.norm(right) < 1e-6:
         right = np.array([1.0, 0.0, 0.0])
     else:
         right = right / np.linalg.norm(right)
-    up = np.cross(forward, right)
+    up = np.cross(right, forward)            # ← right × forward
     up = up / np.linalg.norm(up)
-    return np.column_stack([right, up, forward])
+    return np.column_stack([right, up, -forward])  # ← Z축 반전 (OpenGL)
 
 
 # ====================================================================== #
@@ -192,11 +199,11 @@ class CameraIntrinsics:
             self.fy = fy_new
 
     def pixel_to_world(self, u, v, depth, cam_pos, cam_rot):
-        """픽셀 + depth → 월드 좌표"""
-        x_cam = (u - self.cx) * depth / self.fx
-        y_cam = (v - self.cy) * depth / self.fy
-        z_cam = depth
-        point_cam   = np.array([x_cam, -y_cam, z_cam])
+        """픽셀 + depth → 월드 좌표 (Isaac Sim OpenGL 카메라 좌표계)"""
+        x_cam =  (u - self.cx) * depth / self.fx   # 오른쪽 +
+        y_cam = -(v - self.cy) * depth / self.fy   # 위쪽 + (이미지는 아래로 증가)
+        z_cam = -depth                              # forward가 -Z
+        point_cam   = np.array([x_cam, y_cam, z_cam])
         point_world = cam_pos + cam_rot @ point_cam
         return point_world
 
@@ -259,6 +266,7 @@ class VisionController:
         self.homography_matrix = None
         self.calibrated        = False
         self._rep_ready        = False
+        self.yolo_model        = YOLO(YOLO_MODEL_PATH)
         self.rgb_annot         = None
         self.depth_annot       = None
 
@@ -687,43 +695,72 @@ class VisionController:
         if rgb is None:
             return self._gt_fallback(exclude_cubes)
 
-        hsv      = cv2.cvtColor(rgb, cv2.COLOR_RGB2HSV)
-        detected = []
+        results = self.yolo_model(rgb, conf=0.5, iou=0.3, verbose=False)
 
+        # 클래스별 최고 confidence 박스만 선택
+        best_per_class = {}
+        for r in results:
+            for box in r.boxes:
+                cls_id = int(box.cls)
+                conf   = float(box.conf)
+                if cls_id >= len(COLOR_ORDER):
+                    continue
+                if cls_id not in best_per_class or conf > best_per_class[cls_id]['conf']:
+                    x1, y1, x2, y2 = box.xyxy[0].tolist()
+                    best_per_class[cls_id] = {
+                        'conf': conf,
+                        'cx': int((x1 + x2) / 2),
+                        'cy': int((y1 + y2) / 2),
+                    }
+
+        detected = []
+        for cls_id, info in best_per_class.items():
+            if exclude_cubes and cls_id in exclude_cubes:
+                continue
+            color_name = COLOR_ORDER[cls_id]
+            cx, cy = info['cx'], info['cy']
+
+            pos, method, err = self._best_position(cx, cy, depth, cls_id)
+            if pos is None:
+                continue
+
+            detected.append({
+                'color':           color_name,
+                'index':           cls_id,
+                'position':        pos,
+                'pixel_pos':       (cx, cy),
+                'method':          f'yolo_{method}',
+                'detection_error': err,
+                'conf':            info['conf'],
+            })
+
+        # 감지 못한 큐브 GT fallback
+        detected_indices = {d['index'] for d in detected}
         for i in range(4):
             if exclude_cubes and i in exclude_cubes:
                 continue
-            color_name = COLOR_ORDER[i]
-            mask = self._get_color_mask(hsv, color_name)
-            cnts = cv2.findContours(
-                mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)[0]
-
-            if not cnts or cv2.contourArea(max(cnts, key=cv2.contourArea)) < 100:
+            if i not in detected_indices:
                 gt = get_cube_position(i)
                 if gt is not None:
-                    detected.append({'color': color_name, 'index': i,
-                                     'position': gt, 'pixel_pos': None,
-                                     'method': 'gt_no_detect', 'detection_error': 0.0})
+                    detected.append({
+                        'color':           COLOR_ORDER[i],
+                        'index':           i,
+                        'position':        gt,
+                        'pixel_pos':       None,
+                        'method':          'gt_no_detect',
+                        'detection_error': 0.0,
+                        'conf':            0.0,
+                    })
                     self.performance['gt_fallback'] += 1
-                continue
 
-            c  = max(cnts, key=cv2.contourArea)
-            M  = cv2.moments(c)
-            cx = int(M["m10"] / M["m00"])
-            cy = int(M["m01"] / M["m00"])
-            pos, method, err = self._best_position(cx, cy, depth, i)
-            if pos is not None:
-                detected.append({'color': color_name, 'index': i,
-                                  'position': pos, 'pixel_pos': (cx, cy),
-                                  'method': method, 'detection_error': err})
-
-        print(f"[Vision] Detected {len(detected)} cubes:")
+        print(f"[Vision] YOLO detected {len(detected)} cubes:")
         for cube in detected:
             p   = cube['position']
             pix = cube['pixel_pos']
             print(f"  {cube['color']} (Cube_{cube['index']}): "
-                  f"Pixel={pix} | Pos=({p[0]:.3f},{p[1]:.3f},{p[2]:.3f}) | "
-                  f"[{cube['method']}] Err={cube['detection_error']*1000:.1f}mm")
+                f"Pixel={pix} | Pos=({p[0]:.3f},{p[1]:.3f},{p[2]:.3f}) | "
+                f"[{cube['method']}] conf={cube['conf']:.2f} "
+                f"Err={cube['detection_error']*1000:.1f}mm")
 
         self._publish_cube_detections(detected)
         return detected
