@@ -65,6 +65,12 @@ def _quat_wxyz_to_rotation_matrix(quat_wxyz):
     """Isaac Sim 쿼터니언 (w,x,y,z) → 3x3 rotation matrix"""
     w, x, y, z = (float(quat_wxyz[0]), float(quat_wxyz[1]),
                   float(quat_wxyz[2]), float(quat_wxyz[3]))
+
+    # 검증: norm이 1에 가까워야 함
+    norm = np.sqrt(w*w + x*x + y*y + z*z)
+    if abs(norm - 1.0) > 0.01:
+        w, x, y, z = w/norm, x/norm, y/norm, z/norm
+
     return np.array([
         [1 - 2*(y*y + z*z),     2*(x*y - w*z),     2*(x*z + w*y)],
         [    2*(x*y + w*z), 1 - 2*(x*x + z*z),     2*(y*z - w*x)],
@@ -228,7 +234,7 @@ def _reset_rigid_body_velocity(cube_prim):
 
 
 # ------------------------------------------------------------------ #
-#  attach_cube_to_ee [v4 유지]
+#  attach_cube_to_ee
 # ------------------------------------------------------------------ #
 
 def attach_cube_to_ee(cube_index):
@@ -254,6 +260,23 @@ def attach_cube_to_ee(cube_index):
     # 1순위: RigidPrim API
     cube_pos, cube_rot = _get_rigid_world_pose(cube_path)
     ee_pos,   ee_rot   = _get_rigid_world_pose(ee_path)
+
+    # ── DEBUG: 쿼터니언 원본값 확인 ──────────────────────────────
+    if ee_pos is not None:
+        from omni.isaac.core.prims import RigidPrim
+        _rigid_ee   = RigidPrim(prim_path=ee_path)
+        _rigid_cube = RigidPrim(prim_path=cube_path)
+        _, quat_ee   = _rigid_ee.get_world_pose()
+        _, quat_cube = _rigid_cube.get_world_pose()
+        print(f"[DEBUG] EE   quat raw  = {quat_ee}")
+        print(f"[DEBUG] EE   quat norm = {np.linalg.norm(quat_ee):.4f}")
+        print(f"[DEBUG] Cube quat raw  = {quat_cube}")
+        print(f"[DEBUG] Cube quat norm = {np.linalg.norm(quat_cube):.4f}")
+        print(f"[DEBUG] EE   rot_mat =\n{ee_rot.round(4)}")
+        print(f"[DEBUG] EE   rot trace = {np.trace(ee_rot):.4f}")
+        print(f"[DEBUG] Cube rot_mat =\n{cube_rot.round(4)}")
+        print(f"[DEBUG] Cube rot trace = {np.trace(cube_rot):.4f}")
+    # ──────────────────────────────────────────────────────────────
 
     if cube_pos is not None and ee_pos is not None:
         print(f"[Cube] ✅ Using RigidPrim API (PhysX direct)")
